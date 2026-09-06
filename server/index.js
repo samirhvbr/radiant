@@ -1234,7 +1234,7 @@ app.delete('/api/recipes/:id', (req, res) => {
 
 // ---------- memory ----------
 app.get('/api/memory', (req, res) => res.json({ facts: listFacts() }))
-app.post('/api/memory', (req, res) => { addFactManual(String(req.body?.text || '')); res.json({ facts: listFacts() }) })
+app.post('/api/memory', async (req, res) => { await addFactManual(String(req.body?.text || '')); res.json({ facts: listFacts() }) })
 app.delete('/api/memory/:id', (req, res) => { deleteFact(req.params.id); res.json({ facts: listFacts() }) })
 app.post('/api/memory/clear', (req, res) => { clearFacts(); res.json({ facts: [] }) })
 
@@ -2392,7 +2392,7 @@ app.post('/api/chat', async (req, res) => {
   }
 
   const memoryOn = config.settings.memory !== false
-  const memory = memoryOn ? relevantFacts(text, session.cwd) : []
+  const memory = memoryOn ? await relevantFacts(text, session.cwd) : []
 
   // lead/worker: if this agent has a planner model, have the (stronger) lead model
   // outline the approach first; the (session) model then executes it.
@@ -2509,7 +2509,7 @@ app.post('/api/chat', async (req, res) => {
           requestApproval: null, signal: controller.signal
         })
         if (out && !/^\s*none\b/i.test(out.trim())) {
-          const n = addFacts(out.split('\n').map(l => l.trim()).filter(Boolean), session.cwd)
+          const n = await addFacts(out.split('\n').map(l => l.trim()).filter(Boolean), session.cwd)
           if (n) emit({ type: 'memory_added', count: n })
         }
       } catch {}
