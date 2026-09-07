@@ -2396,7 +2396,16 @@ app.post('/api/chat', async (req, res) => {
 
   // lead/worker: if this agent has a planner model, have the (stronger) lead model
   // outline the approach first; the (session) model then executes it.
-  let plannedPersona = agent?.persona || ''
+  //
+  // ⚠️ THE PLAN TEXT IS PER-TURN, THE PERSONA ISN'T. `plan` is regenerated fresh
+  // from `text` (this turn's request) every time this branch runs, so it must
+  // travel to providers.js as `planAddendum` (the volatile half of the system
+  // prompt), not folded into `persona` (the stable half) — see providers.js's
+  // systemPrompt() comment. Folding it into persona was the original prompt-
+  // caching bug: it made the "stable" system block change on every turn a
+  // plannerModel was configured.
+  const basePersona = agent?.persona || ''
+  let planAddendum = ''
   if (agent?.plannerModel && agent?.plannerProvider && session.useTools !== false && !session.group) {
     const pProvider = config.providers.find(p => p.id === agent.plannerProvider)
     if (pProvider) {
@@ -2414,7 +2423,7 @@ app.post('/api/chat', async (req, res) => {
           requestApproval: null, signal: controller.signal
         })
       } catch {}
-      if (plan.trim()) plannedPersona = `${plannedPersona}\n\n[A lead model has planned the approach below — follow it, adapting as needed:]\n${plan.trim()}`
+      if (plan.trim()) planAddendum = `[A lead model has planned the approach below — follow it, adapting as needed:]\n${plan.trim()}`
     }
   }
 
@@ -2429,6 +2438,8 @@ app.post('/api/chat', async (req, res) => {
     summarize,
     autoCompact: config.settings.autoCompact !== false,
     autoApproveComputer: config.settings.fullAutomation === true,
+    cachingEnabled: config.settings.promptCaching !== false,
+    cacheTtl: config.settings.cacheTtl === '1h' ? '1h' : '5m',
     mcpTools,
     callMcp,
     emit,
@@ -2456,7 +2467,8 @@ app.post('/api/chat', async (req, res) => {
         ...common,
         useTools: session.useTools !== false,
         computerControl: Boolean(session.computerControl),
-        persona: plannedPersona,
+        persona: basePersona,
+        planAddendum,
         skills: mergedSkills,
         askAgent,
         peerAgents,
