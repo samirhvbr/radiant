@@ -10,7 +10,7 @@
  * indentation should I use" share no word longer than three letters, so the old
  * keyword scorer ranked the fact at zero and it never reached the prompt.
  */
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -80,10 +80,57 @@ writeFileSync(join(dir, 'memory.json'), JSON.stringify({ facts: [
 const got = await relevantFacts('what does Tony ship', null, 5)
 ok('recall still works with no embedding model running', got.includes('Tony ships Radiant from a Mac'))
 const n = await addFacts(['Tony writes release notes in plain language'], null)
-ok('a fact can still be added with no embedding model', n === 1)
+ok('a fact can still be added with no embedding model', n.added === 1 && n.superseded === 0)
 ok('and it is on disk', listFacts().some(f => f.text.startsWith('Tony writes release notes')))
-ok('facts written without a model carry no vector',
-   listFacts().every(f => f.vec === undefined || Array.isArray(f.vec)))
+// ⚠️ THIS USED TO BE A TAUTOLOGY. `f.vec === undefined || Array.isArray(f.vec)`
+// is true when there is no vector AND true when there is one, so it passed
+// whichever happened. Read the file, because listFacts() now strips vectors.
+const onDisk = () => JSON.parse(readFileSync(join(dir, 'memory.json'), 'utf8')).facts
+ok('facts written without a model carry no vector', onDisk().every(f => f.vec === undefined))
+
+// ── the API surface must not ship vectors ───────────────────────────────────
+// GET /api/memory returns listFacts(), so a 768-float vector per fact went to
+// the UI and to a phone over Tailscale on every render.
+writeFileSync(join(dir, 'memory.json'), JSON.stringify({ facts: [
+  { id: 'v', text: 'a fact with a vector', cwd: null, vec: [1, 0, 0], vm: vectorTag(), createdAt: new Date().toISOString() }
+] }))
+ok('listFacts strips vectors from what it hands out',
+   listFacts().every(f => f.vec === undefined && f.vm === undefined))
+ok('and keeps the fact itself', listFacts()[0].text === 'a fact with a vector')
+
+// ── the supersession WRITE path, which had no coverage at all ───────────────
+// Without an embedder every earlier case ran the null branch, so supersedeIndex
+// never returned >= 0 and none of this executed.
+const { __setEmbedder } = await import('../server/embed.js')
+const VEC = { 'Tony prefers tabs over spaces': V.tabs, 'Tony now prefers spaces': V.tabs, 'Lunch is at noon': V.lunch }
+__setEmbedder(s => VEC[s] || null)
+
+writeFileSync(join(dir, 'memory.json'), JSON.stringify({ facts: [
+  { id: 'keep', text: 'Tony prefers tabs over spaces', cwd: '/p', vec: V.tabs, vm: vectorTag(), createdAt: '2020-01-01T00:00:00.000Z' },
+  { id: 'other', text: 'Lunch is at noon', cwd: '/p', vec: V.lunch, vm: vectorTag(), createdAt: '2020-01-02T00:00:00.000Z' }
+] }))
+const r = await addFacts(['Tony now prefers spaces'], '/p')
+const after = onDisk()
+ok('a contradicting fact is counted as superseded, not added', r.superseded === 1 && r.added === 0)
+ok('and it keeps the id of the fact it replaced', after.some(f => f.id === 'keep' && f.text === 'Tony now prefers spaces'))
+ok('the sentence it replaced is kept, so a wrong match is recoverable',
+   after.find(f => f.id === 'keep').prevText === 'Tony prefers tabs over spaces')
+// ⚠️ The 300-cap trims by array position, so a fact rewritten in place near the
+// head was the first thing evicted — the newest statement, dropped first.
+ok('the superseded fact moves to the end, so position still means recency',
+   after[after.length - 1].id === 'keep')
+ok('and the unrelated fact is untouched', after.some(f => f.id === 'other' && f.text === 'Lunch is at noon'))
+
+// ── backfill stops on the first failure instead of walking every fact ────────
+let calls = 0
+__setEmbedder(s => { calls++; return s === 'query' ? V.tabs : null })
+writeFileSync(join(dir, 'memory.json'), JSON.stringify({
+  facts: Array.from({ length: 50 }, (_, i) => ({ id: 'b' + i, text: 'unvectored ' + i, cwd: null, createdAt: new Date().toISOString() }))
+}))
+calls = 0
+await relevantFacts('query', null, 5)
+ok('a failing embedder stops the backfill instead of walking all 50 facts', calls <= 2)
+__setEmbedder(null)
 
 console.log(results.join('\n'))
 console.log(`\n${pass}/${pass + fail} passed  ·  memory recalls by meaning and supersedes contradictions`)

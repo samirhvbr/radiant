@@ -12,10 +12,16 @@
  * once in this project and had to be unshipped. When something lands, add it
  * here in the same change.
  */
-import React from 'react'
-import { deviceWord } from './device.js'
+import React, { useEffect, useState } from 'react'
+import { deviceWord, onDeviceResolved } from './device.js'
 
-const SECTIONS = [
+// ⚠️ BUILT PER RENDER, NOT AT IMPORT. This was a module-level const, so every
+// deviceWord() in it was resolved once — while the answer was still the default
+// "iPhone", because resolveDevice() is async and Phone.jsx does not await it.
+// Nothing subscribed to onDeviceResolved either, so it never corrected: on an
+// iPad the Read me said "A model on your iPhone" and "your iPhone Keychain",
+// in the very release that added a section promising it says iPad.
+const sections = () => [
   {
     title: `A model on your ${deviceWord()}`,
     body: [
@@ -43,7 +49,7 @@ const SECTIONS = [
       'There are forty-nine to choose from, grouped by who made them — Google, Meta, Mistral, Microsoft, IBM, Alibaba, Apple, NVIDIA and more. Tap a name to open that shelf; tap it again to close it. Five of them can look at pictures, and one of those can watch a short clip.',
       `Every model is labeled for THIS ${deviceWord()}. Green runs well. Amber runs, but close to the limit — expect it to be slow, and to reload when you switch apps. Red is not expected to load at all. The label is guidance, not a lock: you can still download a red model and try it.`,
       `That label is about memory, not storage, and they are different questions: a phone can easily have room for a file it cannot then run. Bigger models answer better and use more battery. Qwen 3 1.7B is a good place to start on any recent ${deviceWord()}.`,
-      'The panel above the list shows what this {deviceWord()} gives Radiant to work with. It is less than the phone\'s total memory, because iOS limits how much any single app may use.'
+      `The panel above the list shows what this ${deviceWord()} gives Radiant to work with. It is less than the phone's total memory, because iOS limits how much any single app may use.`
     ]
   },
   {
@@ -84,9 +90,13 @@ const SECTIONS = [
 ]
 
 export default function ReadMeScreen () {
+  // Re-render when the device finally names itself, so an iPad that resolved
+  // after this mounted stops reading "iPhone".
+  const [, bump] = useState(0)
+  useEffect(() => onDeviceResolved(() => bump(n => n + 1)), [])
   return (
     <>
-      {SECTIONS.map(s => (
+      {sections().map(s => (
         <section key={s.title} className="rx-readme">
           <h2 className="rx-readme-title">{s.title}</h2>
           {s.body.map((p, i) => <p key={i} className="rx-readme-body">{p}</p>)}

@@ -48,7 +48,7 @@ import * as FirstRunMod from './FirstRun.jsx'
 import SettingsScreen from './SettingsScreen.jsx'
 import HomeScreen from './HomeScreen.jsx'
 import { listChats, newChatId } from './chats.js'
-import { buildNumber } from './device.js'
+import { buildNumber, onDeviceResolved } from './device.js'
 import ReadMeScreen from './ReadMeScreen.jsx'
 import ProvidersScreen from './ProvidersScreen.jsx'
 import SkillsScreen from './SkillsScreen.jsx'
@@ -757,6 +757,13 @@ export default function MobileShell () {
   const rootRef = useRef(null)
   const dark = useMedia('(prefers-color-scheme: dark)')
   const reduce = useMedia('(prefers-reduced-motion: reduce)')
+  // ⚠️ THE DEVICE NAMES ITSELF LATE, AND NOTHING WAS LISTENING. resolveDevice()
+  // is async and Phone.jsx does not await it, so every deviceWord() rendered
+  // before it resolves says "iPhone" — on an iPad, in ten components. device.js
+  // has published onDeviceResolved since it was written and had no subscribers.
+  // One at the root is enough: a re-render here re-runs all ten.
+  const [, deviceTick] = useState(0)
+  useEffect(() => onDeviceResolved(() => deviceTick(n => n + 1)), [])
 
   useDynamicType()
   useKeyboardMetrics(rootRef)

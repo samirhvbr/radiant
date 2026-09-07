@@ -87,19 +87,62 @@ const PROXY_HEADERS = ['x-forwarded-for', 'x-real-ip', 'forwarded', 'tailscale-u
 // with no token and no click. Origin is the only thing that separates them, so
 // it is checked here and nowhere else has to think about it.
 //
-// Absent Origin is the app itself, a native client, curl. chrome-extension:// is
-// the browser extension, which is Origin-checked again at its own socket.
-function sameSiteRequest (req) {
-  const o = req.headers?.origin
-  if (!o) return true
-  if (o.startsWith('chrome-extension://')) return true
-  try { return new URL(o).host === req.headers.host } catch { return false }
+// ⚠️ THE EXPECTED ORIGIN IS BUILT AT BOOT, NEVER READ OFF THE REQUEST. The first
+// version of this gate compared Origin against the Host header — but both are
+// sent by the client, so it only asked whether the request agreed with itself.
+// Any name an attacker controls satisfies that: serve a page from
+// attacker.com:5834 with a one-second DNS record, flip it to 127.0.0.1, and the
+// page is same-origin with Radiant. Origin equals Host, the socket is loopback,
+// and the tab gets /api/share (the token) and a login shell on /term. Measured:
+// `curl -H 'Host: attacker.example:5834' -H 'Origin: http://attacker.example:5834'`
+// returned 200 where a plain third-party Origin correctly returned 401.
+//
+// So the allowlist is fixed: loopback on the port we actually bound, plus the
+// tailnet name we verified ourselves. Nothing derived from the request.
+const LOOPBACK_NAMES = new Set(['127.0.0.1', 'localhost', '::1'])
+// EADDRINUSE falls back to `listen(0)`, so the real port is not known until the
+// server is up — the allowlist has to use that, not the constant.
+let boundPort = PORT
+const bareName = h => String(h || '').replace(/^\[|\]$/g, '')
+
+function allowedOrigin (o) {
+  let u
+  try { u = new URL(o) } catch { return false }
+  const name = bareName(u.hostname)
+  if (LOOPBACK_NAMES.has(name)) return (u.port || '80') === String(boundPort)
+  if (remoteUrl) { try { return bareName(new URL(remoteUrl).hostname) === name } catch { return false } }
+  return false
 }
-function isLocalRequest (req) {
-  if (!sameSiteRequest(req)) return false
+function allowedHost (h) {
+  let u
+  try { u = new URL('http://' + String(h || '')) } catch { return false }
+  const name = bareName(u.hostname)
+  if (LOOPBACK_NAMES.has(name)) return (u.port || '80') === String(boundPort)
+  if (remoteUrl) { try { return bareName(new URL(remoteUrl).hostname) === name } catch { return false } }
+  return false
+}
+function sameSiteRequest (req) {
+  if (!allowedHost(req.headers?.host)) return false
+  const o = req.headers?.origin
+  if (o) return allowedOrigin(o)
+  // ⚠️ NO ORIGIN IS NOT THE SAME AS NO BROWSER. Absent Origin is the app itself,
+  // the iOS client and curl — but a browser also omits it on a no-cors
+  // subresource load, so `<img src=".../api/dictate">` on any page counted as
+  // trusted and turned the microphone on with no click. Browsers always send
+  // Sec-Fetch-*; native clients and curl never do, so its absence is the signal.
+  const site = req.headers['sec-fetch-site']
+  if (!site) return true
+  return site === 'same-origin' || site === 'none'
+}
+// The socket half, on its own: the extension bridge needs it without the Origin
+// rule, because its Origin is a chrome-extension:// URL by design.
+function loopbackSocket (req) {
   for (const h of PROXY_HEADERS) if (req.headers?.[h]) return false
   const ra = req.socket?.remoteAddress
   return !ra || ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1'
+}
+function isLocalRequest (req) {
+  return sameSiteRequest(req) && loopbackSocket(req)
 }
 // The cookie is what keeps a phone signed in. localStorage on an iOS Home
 // Screen app is separate from Safari's and can be evicted, which is why the
@@ -2493,7 +2536,20 @@ app.post('/api/chat', async (req, res) => {
       if (t) { session.title = t; emit({ type: 'title', title: t }) }
     }
     // distill durable facts into long-term memory (best-effort, after the turn)
-    if (memoryOn && !session.group && !controller.signal.aborted) {
+    //
+    // ⚠️ DO NOT DISTIL A TURN THAT READ SOMEONE ELSE'S WORDS. The distiller runs
+    // on the assistant's own text, and untrusted() explicitly asks the agent to
+    // repeat what a page said rather than act on it — so injected prose reliably
+    // lands in that text. From there it was packed into a fresh turn with no
+    // untrusted framing at all, and whatever came back was written to memory and
+    // later rendered into the SYSTEM prompt as a remembered fact about the user.
+    // Supersession made it worse: a poisoned fact phrased near a real one
+    // replaces it outright. A web page cannot be allowed to author a durable
+    // belief about Tony, so a turn that read one is not distilled.
+    const FROM_ELSEWHERE = /^(fetch_url|web_search|browser_|mcp__)/
+    const readElsewhere = (m => (m?.parts || []).some(p => p.type === 'tool' && FROM_ELSEWHERE.test(p.name || '')))(
+      [...session.messages].reverse().find(m => m.role === 'assistant'))
+    if (memoryOn && !readElsewhere && !session.group && !controller.signal.aborted) {
       try {
         const lastUser = [...session.messages].reverse().find(m => m.role === 'user')
         const lastAsst = [...session.messages].reverse().find(m => m.role === 'assistant')
@@ -2509,8 +2565,12 @@ app.post('/api/chat', async (req, res) => {
           requestApproval: null, signal: controller.signal
         })
         if (out && !/^\s*none\b/i.test(out.trim())) {
-          const n = await addFacts(out.split('\n').map(l => l.trim()).filter(Boolean), session.cwd)
-          if (n) emit({ type: 'memory_added', count: n })
+          // Replacing a fact is not adding one. addFacts used to return the two
+          // summed, so restating a preference reported facts remembered when the
+          // count had not grown — and that distinction is the whole point of
+          // supersession.
+          const { added, superseded } = await addFacts(out.split('\n').map(l => l.trim()).filter(Boolean), session.cwd)
+          if (added || superseded) emit({ type: 'memory_added', count: added, updated: superseded })
         }
       } catch {}
     }
@@ -2614,7 +2674,14 @@ server.on('upgrade', (req, socket, head) => {
 
 extWss.on('connection', async (ws, req) => {
   const origin = req.headers.origin || ''
-  if (!isLocalRequest(req) || !/^chrome-extension:\/\//.test(origin)) {
+  // ⚠️ THIS IS THE ONLY ENDPOINT THAT TAKES AN EXTENSION ORIGIN. It used to be
+  // blanket-trusted in sameSiteRequest, which meant any extension holding
+  // <all_urls> — an ad blocker, a coupon tool, one that changed hands — also
+  // reached /api and, worse, the /term socket, which spawns a login shell with
+  // no token. A browser-scoped compromise became code execution on the Mac.
+  // The bridge is all the extension ever opens (extension/sw.js:40), so the
+  // origin rule lives here and nowhere else.
+  if (!loopbackSocket(req) || !/^chrome-extension:\/\/[a-p]{32}$/.test(origin)) {
     ws.close(1008, 'unauthorized')
     return
   }
@@ -2666,14 +2733,18 @@ wss.on('connection', (ws, req) => {
 // Resolves with the bound port once listening; falls back to a random free
 // port if the default is taken (e.g. a dev instance is already running).
 export const ready = new Promise((resolve, reject) => {
+  // ⚠️ RECORD THE PORT WE ACTUALLY GOT. The same-origin allowlist above compares
+  // against it, so a fallback bind that left boundPort at 5834 would lock the
+  // app's own window out of its own server.
+  const up = () => { boundPort = server.address().port; resolve(boundPort) }
   server.once('error', err => {
     if (err.code === 'EADDRINUSE') {
-      server.listen(0, BIND_HOST, () => resolve(server.address().port))
+      server.listen(0, BIND_HOST, up)
     } else {
       reject(err)
     }
   })
-  server.listen(PORT, BIND_HOST, () => resolve(server.address().port))
+  server.listen(PORT, BIND_HOST, up)
 })
 // ⚠️ SET UP THE AWAY-FROM-HOME ADDRESS AT BOOT, not only when the checkbox is
 // flipped. Tony's bottom line: "i would like people using their iphone away from

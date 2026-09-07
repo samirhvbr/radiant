@@ -68,7 +68,20 @@ function publicKeyB64u (device) {
 export function connectGateway (id, { timeoutMs = 4500 } = {}) {
   return new Promise((resolve, reject) => {
     let settled = false
-    const ws = new WebSocket(`${id.url}/?token=${encodeURIComponent(id.op.token)}`, { rejectUnauthorized: false })
+    // ⚠️ THE GATEWAY IS OFTEN ON ANOTHER MACHINE, SO THE CERTIFICATE HAS TO MEAN
+    // SOMETHING. This carried `rejectUnauthorized: false`, which accepts any
+    // certificate at all — self-signed, expired, wrong host. The file's own header
+    // says the remote case is normal ("the machine running Radiant is often just a
+    // client pointing at it"), so on a wss:// gateway that handed the operator
+    // device token to anyone on the path, who could then relay to the real gateway
+    // and read the whole session. A self-signed gateway needs a pinned `ca:` here,
+    // not a switch that turns the check off.
+    //
+    // The token still goes in the query string because that is the gateway's own
+    // protocol, not ours to change from this side — but it does mean the token
+    // lands in any proxy or gateway access log. Worth moving to an Authorization
+    // header on the OpenClaw side.
+    const ws = new WebSocket(`${id.url}/?token=${encodeURIComponent(id.op.token)}`)
     const pending = new Map()
     const fail = e => { if (!settled) { settled = true; try { ws.close() } catch {}; reject(e) } }
     const timer = setTimeout(() => fail(new Error('gateway did not respond')), timeoutMs)

@@ -54,11 +54,42 @@ ok('a third-party origin gets no Access-Control-Allow-Origin',
    evil.headers.get('access-control-allow-origin') === null,
    `got ${evil.headers.get('access-control-allow-origin')}`)
 
+// ── the three ways through the first fix ────────────────────────────────────
+// ⚠️ THE FIRST GATE COMPARED ORIGIN AGAINST THE HOST HEADER. Both are sent by
+// the client, so it only asked whether the request agreed with itself, and any
+// name an attacker controls satisfies that. Measured against the shipped build:
+// a plain third-party Origin correctly returned 401, and each of these returned
+// 200. The expected origin is built at boot now and never read off the request.
+const rebind = await get({ Host: `attacker.example:${PORT}`, Origin: `http://attacker.example:${PORT}` })
+ok('a page claiming to be the address it is calling is refused (DNS rebinding)',
+   rebind.status === 401 || rebind.status === 403, `got HTTP ${rebind.status}`)
+
+// Any extension was trusted as a group, which reached /api and the /term socket
+// — a pty. The Radiant extension only ever opens /ws/extension, so that is the
+// one place an extension origin is accepted now.
+const anyExt = await get({ Origin: 'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' })
+ok('an unrelated browser extension is refused', anyExt.status === 401 || anyExt.status === 403,
+   `got HTTP ${anyExt.status}`)
+
+// A browser omits Origin on a no-cors subresource load, so `<img src=…>` counted
+// as "no Origin, therefore the app itself". Sec-Fetch-* is what tells them apart:
+// browsers always send it, curl and the iOS client never do.
+const asImage = await get({
+  Host: `127.0.0.1:${PORT}`,
+  'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'no-cors', 'Sec-Fetch-Dest': 'image'
+})
+ok('a page loading a Radiant URL as an image is refused',
+   asImage.status === 401 || asImage.status === 403, `got HTTP ${asImage.status}`)
+
 // ── what must not regress ───────────────────────────────────────────────────
 const bare = await get({})
 ok('a request with no Origin still works (the app itself)', bare.status === 200, `got HTTP ${bare.status}`)
 const same = await get({ Origin: base })
 ok('a same-origin request still works', same.status === 200, `got HTTP ${same.status}`)
+const fetched = await get({ Host: `127.0.0.1:${PORT}`, 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors' })
+ok('the app window\'s own fetch still works', fetched.status === 200, `got HTTP ${fetched.status}`)
+const named = await get({ Host: `localhost:${PORT}`, Origin: `http://localhost:${PORT}` })
+ok('localhost spelt out still works', named.status === 200, `got HTTP ${named.status}`)
 
 // ── credentials must not ride along in the config payload ───────────────────
 if (bare.status === 200) {

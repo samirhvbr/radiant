@@ -3,7 +3,7 @@ import path from 'path'
 import crypto from 'crypto'
 import { resolveSkillDir } from './config.js'
 import { fetchRetry, isTransient } from './util.js'
-import { TOOL_DEFS, runTool } from './tools.js'
+import { TOOL_DEFS, runTool, outsideWorkspace } from './tools.js'
 import { COMPUTER_TOOL_DEFS, COMPUTER_TOOL_NAMES, COMPUTER_SAFE, runComputerTool } from './computer-tools.js'
 import { COPILOT_HEADERS } from './oauth.js'
 
@@ -528,6 +528,15 @@ async function compactSession (session, keepRecent, summarize, emit) {
   return true
 }
 
+// Tools plan mode must not offer: the two that write files, the one that runs a
+// shell, and every computer tool that is not purely a view. MCP tools stay —
+// they are behind the approval gate, and research is what plan mode is for.
+const PLAN_BLOCKED = new Set(['write_file', 'edit_file', 'run_command'])
+function planBlocked (name) {
+  if (PLAN_BLOCKED.has(name)) return true
+  return COMPUTER_TOOL_NAMES.has(name) && !COMPUTER_SAFE.has(name)
+}
+
 // ---------- the agent loop ----------
 export async function runTurn ({ provider, model, apiKey, getAccessToken, getAccountId, session, useTools, computerControl, skills, persona, memory, agentId, groupSpeakerId, groupNames, mcpTools, callMcp, askAgent, peerAgents, planMode, onPlanExit, effort, summarize, autoCompact, autoApproveComputer, emit, requestApproval, requestUserChoice, signal }) {
   const cwd = session.cwd || os.homedir()
@@ -561,6 +570,12 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
   // ChatGPT subscription (OAuth, no API key) must use the Responses/Codex backend
   const useChatgpt = provider.id === 'openai' && accessToken && !apiKey
   const canAskAgents = askAgent && peerAgents && peerAgents.length
+  // ⚠️ PLAN MODE WAS A SENTENCE, NOT A GATE. It added exit_plan_mode and told the
+  // model not to change anything, but removed nothing — write_file and edit_file
+  // stayed in the schema, and until the approval fix above they had no prompt
+  // behind them either. The one promise plan mode makes to someone who turned it
+  // on precisely because they did not trust the task was enforced by prose. Now
+  // the tools are not offered, and the dispatch below refuses them a second time.
   const toolDefs = [
     ...TOOL_DEFS,
     ...(computerControl ? COMPUTER_TOOL_DEFS : []),
@@ -569,7 +584,7 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
     SHOW_WIDGET_TOOL,
     ...(requestUserChoice ? [ASK_USER_TOOL] : []),
     ...(planMode ? [EXIT_PLAN_TOOL] : [])
-  ]
+  ].filter(t => !planMode || !planBlocked(t.name))
 
   let toolsEnabled = useTools
   // loop-breaker: nudge (never block) when the model repeats an identical call
@@ -658,12 +673,28 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
       emit({ type: 'tool_start', id: call.id, name: call.name, args: call.args })
       const isComputer = COMPUTER_TOOL_NAMES.has(call.name)
       const isMcp = call.name.startsWith('mcp__')
-      const needsApproval = requestApproval && (call.name === 'run_command' || isMcp || (isComputer && !COMPUTER_SAFE.has(call.name) && !autoApproveComputer))
+      // ⚠️ THE GATE USED TO COVER run_command AND NOTHING ELSE THAT WRITES.
+      // write_file and edit_file put bytes on disk at any absolute path with no
+      // prompt at all, so the shell gate was a front door beside an open window:
+      // ~/.zshrc, a LaunchAgent, or .git/hooks/pre-commit reached the same place
+      // without one. Writes always ask now, and a READ that leaves the workspace
+      // asks too — read_file plus fetch_url was a complete, un-prompted path from
+      // ~/.radiant/config.json (every provider key and OAuth token) to a URL.
+      const isWrite = call.name === 'write_file' || call.name === 'edit_file'
+      const leavesWorkspace = (isWrite || call.name === 'read_file') &&
+        outsideWorkspace(call.args?.path, session.cwd)
+      const needsApproval = requestApproval && (call.name === 'run_command' || isMcp || isWrite || leavesWorkspace ||
+        (isComputer && !COMPUTER_SAFE.has(call.name) && !autoApproveComputer))
       const approved = needsApproval ? await requestApproval(call) : true
       if (signal.aborted) return
       if (!approved) {
         part.denied = true
         part.result = 'The user declined this action. Ask them how they would like to proceed, or try a different approach.'
+      } else if (planMode && planBlocked(call.name)) {
+        // Second layer. The schema above no longer offers these, but a provider
+        // replaying a stale tool list must not be the thing that decides.
+        part.denied = true
+        part.result = `Plan mode is on, so ${call.name} is unavailable. Research with read/list/grep only, then call exit_plan_mode with your plan.`
       } else if (call.name === 'todo_write') {
         const todos = Array.isArray(call.args?.todos) ? call.args.todos : []
         session.todos = todos

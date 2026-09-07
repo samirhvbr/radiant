@@ -10,3 +10,11 @@ apps/ios/ios/DerivedData/
 
 # local dev conveniences
 .claude/
+.gstack/
+
+# Radiant keeps its secrets in ~/.radiant and the Keychain, so there is no .env
+# today — but this is a public repo, and the day someone adds one it must not be
+# the commit that publishes it.
+.env
+.env.*
+!.env.example

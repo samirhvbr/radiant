@@ -211,32 +211,56 @@ export const readMac = async () => {
     try { return JSON.parse(localStorage.getItem(MAC_KEY) || 'null') || { base: '', token: '' } }
     catch { return { base: '', token: '' } }
   }
-  try {
-    const { value } = await ss.get({ key: MAC_KEY })
-    if (value) return JSON.parse(value)
-  } catch { /* nothing stored yet */ }
+  let stored = null
+  try { stored = (await ss.get({ key: MAC_KEY }))?.value || null } catch { /* nothing stored yet */ }
+  if (stored) {
+    // ⚠️ A STORED VALUE THAT WILL NOT PARSE IS NOT "NOTHING STORED". Both the read
+    // and the parse used to share one catch, so a corrupt entry fell through to
+    // the migration, found nothing left in localStorage, and returned empty —
+    // for good, on every later call. The phone read as permanently unpaired with
+    // nothing to clear. Drop the bad entry instead, so re-pairing works.
+    try { return JSON.parse(stored) } catch { try { await ss.remove({ key: MAC_KEY }) } catch {} }
+  }
   // A token paired before this moved is still in localStorage. Carry it over
   // once and clear it, so upgrading does not silently unpair the phone.
-  try {
-    const legacy = localStorage.getItem(MAC_KEY)
-    if (legacy) {
-      await ss.set({ key: MAC_KEY, value: legacy })
-      localStorage.removeItem(MAC_KEY)
-      return JSON.parse(legacy)
+  //
+  // ⚠️ PARSE BEFORE COMMITTING. This wrote to the Keychain and deleted the
+  // localStorage copy before parsing, so a corrupt legacy value destroyed the
+  // only readable copy on its way to being unreadable.
+  let legacy = null
+  try { legacy = localStorage.getItem(MAC_KEY) } catch {}
+  if (legacy) {
+    let parsed = null
+    try { parsed = JSON.parse(legacy) } catch { /* leave it alone; it is not a token */ }
+    if (parsed) {
+      try {
+        await ss.set({ key: MAC_KEY, value: legacy })
+        try { localStorage.removeItem(MAC_KEY) } catch {}
+      } catch { /* Keychain refused; the localStorage copy is still the live one */ }
+      return parsed
     }
-  } catch { /* nothing to migrate */ }
+  }
   return { base: '', token: '' }
 }
 
+/**
+ * ⚠️ ON A PHONE, A KEYCHAIN FAILURE IS A FAILURE — NOT A REASON TO USE
+ * localStorage. This used to fall through to the web path when ss.set threw,
+ * writing the Mac token into the container this file's own header calls
+ * "readable from a backup, from a jailbroken device, and by anything that can
+ * reach the container". A Keychain write really can fail — errSecInteractionNotAllowed
+ * before first unlock is the ordinary case — so the migration quietly reversed
+ * itself and the pairing screen still said it had worked. Throws now, so the
+ * caller can say so. localStorage stays for the browser preview, which never
+ * holds a real token.
+ */
 export const saveMac = async (mac) => {
   const raw = JSON.stringify(mac)
   const ss = SS()
   if (ss) {
-    try {
-      await ss.set({ key: MAC_KEY, value: raw })
-      try { localStorage.removeItem(MAC_KEY) } catch {}
-      return
-    } catch { /* fall through to the web path */ }
+    await ss.set({ key: MAC_KEY, value: raw })
+    try { localStorage.removeItem(MAC_KEY) } catch {}
+    return
   }
   try { localStorage.setItem(MAC_KEY, raw) } catch { /* private mode */ }
 }

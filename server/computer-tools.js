@@ -2,6 +2,11 @@ import { desktop, screenshot as screenScreenshot, screenSize, helperAvailable, p
 import { web, browserAvailable, chromeReachable } from './browser.js'
 import * as osa from './chrome-osa.js'
 import { ext, extensionConnected } from './chrome-ext.js'
+// ⚠️ A PAGE READ THROUGH THE BROWSER IS AS UNTRUSTED AS ONE READ WITH fetch_url —
+// more so, because this one comes from the Chrome the user is signed into.
+// tools.js wrapped every web read and these did not, so the same injected text
+// arrived here as plain tool output with nothing marking it as data.
+import { untrusted } from './tools.js'
 
 // Two control surfaces the agent can drive when "computer control" is enabled:
 // the whole desktop (screen_*) and an automated browser (browser_*). Tools that
@@ -34,7 +39,10 @@ export const COMPUTER_TOOL_DEFS = [
 export const COMPUTER_TOOL_NAMES = new Set(COMPUTER_TOOL_DEFS.map(t => t.name))
 
 // mutating actions ask for approval; pure views (screenshots/read) don't
-export const COMPUTER_SAFE = new Set(['browser_screenshot', 'browser_read', 'browser_network', 'browser_tabs', 'screen_screenshot', 'screen_move'])
+// browser_network is NOT here: it returns request bodies and header inventories
+// from the user's signed-in sessions, which is a read of sensitive data rather
+// than a view of the screen. Everything else on this list only looks.
+export const COMPUTER_SAFE = new Set(['browser_screenshot', 'browser_read', 'browser_tabs', 'screen_screenshot', 'screen_move'])
 const SENSITIVE_HDR = /^(cookie|authorization|x-csrf-token|x-xsrf-token|x-api-key|set-cookie)$/i
 const NOISE_HDR = /^(host|connection|content-length|accept-encoding|user-agent|sec-|:)/i
 
@@ -144,13 +152,13 @@ export async function runComputerTool (name, input) {
       case 'browser_read': {
         if (extensionConnected()) {
           const r = await ext.readText(12000, input.tabId)
-          return { content: `${r.title} (${r.url}) — your own Chrome\n\n${r.text}` }
+          return { content: untrusted(`${r.title} (${r.url}) — your own Chrome`, r.text) }
         }
         if (await target() === 'osa') {
           const r = await osa.readText()
-          return { content: `${r.title} (${r.url}) — your own Chrome\n\n${r.text}` }
+          return { content: untrusted(`${r.title} (${r.url}) — your own Chrome`, r.text) }
         }
-        const r = await web.readText(); return { content: `${r.title} (${r.url})\n\n${r.text}` }
+        const r = await web.readText(); return { content: untrusted(`${r.title} (${r.url})`, r.text) }
       }
       case 'browser_network': {
         const calls = await web.getNetwork(input.filter)
@@ -159,7 +167,9 @@ export async function runComputerTool (name, input) {
           const hdrs = Object.entries(c.headers || {}).filter(([k]) => !NOISE_HDR.test(k)).map(([k, v]) => `    ${k}: ${SENSITIVE_HDR.test(k) ? '[present — sensitive; the request needs it, keep it out of shared code]' : v}`).join('\n')
           return `[${i + 1}] ${c.method} ${c.url}\n  ${c.status} · ${c.contentType}\n  headers:\n${hdrs}${c.postData ? `\n  request body: ${c.postData}` : ''}${c.responseSample ? `\n  response sample: ${c.responseSample}` : ''}`
         }).join('\n\n')
-        return { content: `Captured ${calls.length} API call(s), newest first:\n\n${fmt}` }
+        // The site controls its own response bodies, and they are echoed verbatim
+        // into `response sample:` — same trust boundary as browser_read.
+        return { content: untrusted('captured network traffic', `Captured ${calls.length} API call(s), newest first:\n\n${fmt}`) }
       }
 
       case 'screen_screenshot': { const img = await screenScreenshot(); const s = await screenSize(); return { content: `Desktop screenshot (${s.width}x${s.height}).`, image: img } }

@@ -33,11 +33,10 @@ const PROBE_TIMEOUT = 700
 const EMBED_TIMEOUT = 2500
 let probe = { at: 0, ok: false }
 
-async function withTimeout (url, opts, ms) {
-  const ac = new AbortController()
-  const t = setTimeout(() => ac.abort(), ms)
-  try { return await fetch(url, { ...opts, signal: ac.signal }) } finally { clearTimeout(t) }
-}
+// AbortSignal.timeout is the stdlib version of this, and server/index.js:397
+// already uses it for the identical Ollama probe. Kept as a one-line alias so
+// the two call sites below read the same as they did.
+const withTimeout = (url, opts, ms) => fetch(url, { ...opts, signal: AbortSignal.timeout(ms) })
 
 /** Is a local embedding model actually there? Cached, cheap, never throws. */
 export async function embeddingsAvailable () {
@@ -54,10 +53,20 @@ export async function embeddingsAvailable () {
   return probe.ok
 }
 
+// ⚠️ TEST SEAM, AND IT EARNS ITS KEEP. Supersession (which overwrites a fact the
+// user gave us) and the backfill loop (which rewrites the file on a read path)
+// are the most destructive code in memory.js, and both were unreachable in the
+// suite: with no Ollama, embed() returns null, so supersedeIndex never fires and
+// the backfill never runs. Every assertion ran against the one branch that does
+// nothing. A setter is cheaper than asking anyone to pull 270 MB to test division.
+let override = null
+export function __setEmbedder (fn) { override = fn }
+
 /** A vector for one string, or null if local embeddings are not available. */
 export async function embed (text) {
   const s = String(text || '').trim()
   if (!s) return null
+  if (override) return override(s)
   if (!(await embeddingsAvailable())) return null
   try {
     const res = await withTimeout(`${OLLAMA}/api/embeddings`, {

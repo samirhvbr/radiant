@@ -407,6 +407,24 @@
 /* A full-bleed row would clip its ring against the group's edge */
 .is-native .rx-row:focus-visible { outline-offset: -3px; border-radius: 0; }
 
+/* ⚠️ A TEXT FIELD STILL HAS TO SHOW FOCUS SOMEHOW. The exclusion above is right
+   about the ring — an input matches :focus-visible on a plain tap, so it drew a
+   3pt web ring on the address field. But it excludes by ELEMENT TYPE, not by how
+   focus arrived, and these were the only focus rules touching inputs: nothing
+   else in this file changes a field's border, background or shadow. So someone
+   on a hardware keyboard, Full Keyboard Access or Switch Control had no way to
+   see which field they were in. WCAG 2.4.7, and precisely the people AGENTS.md
+   names two lines after telling us not to remove focus indication.
+
+   A hairline in the tint is the native-looking answer: it reads as an iOS field
+   picking up focus rather than a web ring, and it is there however focus came. */
+.is-native input:focus,
+.is-native textarea:focus,
+.is-native [contenteditable]:focus {
+  box-shadow: 0 0 0 1px var(--rx-tint);
+  border-radius: 8px;
+}
+
 /* Scrollbars are never drawn. styles.css styles them to be VISIBLE, which is
    correct on a Mac and disqualifying on a phone. Stated explicitly so nobody
    adds one back. */
@@ -1917,22 +1935,30 @@
    .rx-intro-actions changed how it sizes itself — the buttons stopped filling
    it and collapsed to the width of their own labels, which looked far worse
    than the problem being fixed. Padding leaves every child's sizing alone. */
-/* ⚠️ THE iPAD WAS THE PHONE LAYOUT STRETCHED TO 834pt. This rule existed but
-   covered only the first-run screen, and at 700px — which on an 834pt iPad is
-   almost the full width, so it barely did anything. Everything else (Settings,
-   Models, Skills, Home) had no cap at all: full-width buttons, a grouped list
-   running edge to edge, and a column of text nobody wants to read that wide.
-   Tony: "i want ios and ipad apps to be symmetrical."
+/* ⚠️ THE iPAD MEASURE LIVES ON THE SCROLLER, IN MobileShell.jsx. There was a
+   second rule here capping .rx-intro, .rx-screen, .rx-home-head and
+   .rx-home-actions at 620px, and measuring it at 834pt showed three of those
+   four did nothing at all: no element in the app carries `rx-screen` (only
+   rx-screen-intro and rx-screen-grouped exist), and .rx-home-head/.rx-home-actions
+   are overridden by the `padding` shorthands further down this file — same
+   specificity, later in the source, so they win. Home measured 628px wide, which
+   is 20+16 from those shorthands, not the 40 the 620 rule would have given.
 
-   620px is close to a large phone's content column, so an iPad shows the same
-   proportions rather than a different app. Padding, not max-width, for the
-   reason the original note gives: max-width made flex children collapse to the
-   width of their own labels, which looked worse than the stretch. */
+   Its premise was wrong too: it said Settings, Models, Skills and Home "had no
+   cap at all", but .rx-shell-scroll has centred every screen the shell pushes at
+   --rx-measure: 700px all along. So the rule's only live effect was to make
+   first-run 620 while everything after it was 700 — the asymmetry it was written
+   to remove. MobileShell.jsx's own note says why capping children is the wrong
+   shape: it throws away the alignment between a section header and the cards
+   under it. One number, one place. Change --rx-measure if 700 is wrong.
+
+   .rx-intro is the exception and needs its own line: it is a .rx-cover, a
+   full-screen layer OUTSIDE .rx-shell-scroll, so the scroller's padding never
+   reaches it. Deleting the old rule outright measured first-run at 778px against
+   700 everywhere else — wider than the app it opens into. It reads the same
+   variable, so there is still one number. */
 @media (min-width: 768px) {
-  .is-native .rx-intro,
-  .is-native .rx-screen,
-  .is-native .rx-home-head,
-  .is-native .rx-home-actions { padding-inline: calc((100% - 620px) / 2); }
+  .is-native .rx-intro { padding-inline: max(28px, calc((100% - var(--rx-measure, 100%)) / 2)); }
 }
 .is-native .rx-intro-actions {
   position: relative;

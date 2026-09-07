@@ -139,13 +139,16 @@ function MacImport ({ onDone, onCancel }) {
     setBusy(true); setErr(''); setRows(null)
     try {
       const list = await fetchMacSkills(mac.base, mac.token)
-      await saveMac(mac)
+      // saveMac throws rather than quietly writing this token to localStorage —
+      // it unlocks the whole Mac, so a failed Keychain write has to be visible.
+      try { await saveMac(mac) } catch { throw new Error('keychain') }
       setRows(list)
       if (!list.length) setErr('That Mac has no skills yet.')
     } catch (e) {
       const m = String(e.message || e)
       setErr(m === 'bad_address' ? 'That does not look like an address. Try 100.x.y.z:5834.'
         : m === 'unauthorized' ? 'The Mac refused that token. Copy it again from Settings → Devices on the Mac.'
+        : m === 'keychain' ? 'Connected, but the token could not be stored securely, so it was not kept. Unlock the phone and try again.'
         : 'Could not reach that Mac. Check both are on Tailscale and Radiant is open on the Mac.')
     }
     setBusy(false)

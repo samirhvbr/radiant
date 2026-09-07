@@ -1,9 +1,14 @@
 # Radiant — read this first, every turn
 
-## ⚠️ THE iPHONE APP IS IN REVIEW — v1.0, build 4 (resubmitted 2026-09-03)
+## ⚠️ THE iPHONE APP — v1.0, and the project file is at build 6
 
-⚠️ **CHECK THE ACTUAL STATUS BEFORE YOU TRUST THIS HEADING.** It was wrong for
-nine days. This file said "with Apple, build 2" while App Store Connect had it
+⚠️ **CHECK THE ACTUAL STATUS BEFORE YOU TRUST THIS HEADING.** It went stale
+again: it said "build 4 (resubmitted 2026-09-03)" while `CURRENT_PROJECT_VERSION`
+in `apps/ios/ios/App/App.xcodeproj/project.pbxproj` had moved to 6, with "iOS
+build 5" (`07bc4b2`) and "iOS build 6" (`b92628c`) committed in between. Which of
+those builds Apple actually holds, and what state it is in, is **not recorded
+here and cannot be** — read it from App Store Connect. It was also wrong for
+nine days before that. This file said "with Apple, build 2" while App Store Connect had it
 REJECTED since 2026-08-25 under 2.1 Information Needed — Tony had answered the
 same evening, but a rejected version does not re-enter the queue by replying, it
 has to be RESUBMITTED, and nobody knew because nobody looked. A whole day of iOS
@@ -27,8 +32,10 @@ after downloading 3.5 GB. Fixed on `master` in `e3595d1` (both entries now use
 A reviewer who taps Google's newest model hits it.
 
 **To iterate on what Apple has:** a submitted binary cannot be edited. Raise
-`CURRENT_PROJECT_VERSION` (currently 2 — the next upload must be 3 or higher,
-App Store Connect rejects a repeat), archive, upload, then in App Store Connect
+`CURRENT_PROJECT_VERSION` (read it from the project file rather than from this
+sentence, which has been wrong twice — the next upload must be higher than
+whatever is there, App Store Connect rejects a repeat), archive, upload, then in
+App Store Connect
 attach the new build to the submission. While the state is *Waiting for Review*
 or *In Review*, use **Remove this version from review** first, swap the build,
 and submit again — that keeps the same version 1.0 listing. Once it is
