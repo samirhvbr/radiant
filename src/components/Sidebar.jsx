@@ -234,6 +234,10 @@ function SessionRow ({ s, showAgent = true, ctx }) {
     )
 }
 
+// ⚠️ ORDER IS THE PILL'S POSITION. The bottom row's selected tab is found by
+// index in this list, so reordering it moves the pill; it is not decoration.
+const WORK = ['tasks', 'loops', 'graph']
+
 export default function Sidebar ({ section = 'chat', onSection, onOpenAgents, sessions, activeId, working, onOpen, onNew, onNewGroup, onDelete, onArchive, onRename, onPin, agents = [], projects = [], projectsError = null, onNewProject, onRenameProject, onDeleteProject, onMoveSession, onSettings, mode, onToggleMode, updateInfo, onUpdate, onCloseNav }) {
   const agentOf = id => agents.find(a => a.id === id)
   const [width, setWidth] = useState(() => {
@@ -381,17 +385,35 @@ export default function Sidebar ({ section = 'chat', onSection, onOpenAgents, se
       {/* ⚠️ THE PILL'S POSITION IS DATA, NOT MARKUP. It is a pseudo-element on the
           track that translates by whole steps, so which tab is selected has to
           reach CSS as a number. A background on the button cannot travel between
-          two elements — which is why the selection used to jump. */}
-      <div
-        className='sidebar-switch'
-        style={{ '--tab-i': section === 'tasks' ? 2 : view === 'bots' ? 1 : 0 }}
-      >
-        <button className={section === 'chat' && view === 'chats' ? 'on' : ''}
-          onClick={() => { onSection?.('chat'); setView('chats') }}>Chats</button>
-        <button className={section === 'chat' && view === 'bots' ? 'on' : ''}
-          onClick={() => { onSection?.('chat'); setView('bots') }}>Agents</button>
-        <button className={section === 'tasks' ? 'on' : ''}
-          onClick={() => onSection?.('tasks')}>Tasks</button>
+          two elements — which is why the selection used to jump.
+          ⚠️ AND THE PILL'S WIDTH IS DATA TOO, now that the two rows hold two and
+          three tabs. It was hardcoded to a third of the track; on the top row
+          that drew a pill two thirds the width of the button under it. */}
+      <div className='sidebar-tabs'>
+        {/* Where you are: a conversation, or the agents that hold them. */}
+        <div
+          className={'sidebar-switch' + (section === 'chat' ? '' : ' is-off')}
+          style={{ '--tab-n': 2, '--tab-i': view === 'bots' ? 1 : 0 }}
+        >
+          <button className={section === 'chat' && view === 'chats' ? 'on' : ''}
+            onClick={() => { onSection?.('chat'); setView('chats') }}>Chat</button>
+          <button className={section === 'chat' && view === 'bots' ? 'on' : ''}
+            onClick={() => { onSection?.('chat'); setView('bots') }}>Agents</button>
+        </div>
+        {/* What is being built: one job, a run of them, or the shape of what you
+            are building it in. Reading left to right, each is a layer up from
+            the last. */}
+        <div
+          className={'sidebar-switch' + (WORK.includes(section) ? '' : ' is-off')}
+          style={{ '--tab-n': 3, '--tab-i': Math.max(0, WORK.indexOf(section)) }}
+        >
+          <button className={section === 'tasks' ? 'on' : ''}
+            onClick={() => onSection?.('tasks')}>Task</button>
+          <button className={section === 'loops' ? 'on' : ''}
+            onClick={() => onSection?.('loops')}>Loop</button>
+          <button className={section === 'graph' ? 'on' : ''}
+            onClick={() => onSection?.('graph')}>Graph</button>
+        </div>
       </div>
       {section === 'chat' && view === 'chats' && (
         <input className='session-search' placeholder='Search all sessions…' value={search}

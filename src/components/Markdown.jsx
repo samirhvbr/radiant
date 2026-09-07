@@ -49,7 +49,10 @@ const PREVIEWABLE = new Set(['html', 'svg', 'mermaid'])
 let mermaidLib = null
 let mermaidSeq = 0
 
-async function renderMermaid (code, host, dark) {
+// Exported so the Graph view draws through the same instance: one mermaid setup
+// at securityLevel 'strict', loaded once, themed once. A second copy would be a
+// second place to get the security level wrong.
+export async function renderMermaid (code, host, dark) {
   if (!mermaidLib) {
     const mod = await import('mermaid')
     mermaidLib = mod.default
@@ -126,7 +129,12 @@ function attachArtifact (pre) {
 
     if (lang === 'mermaid') {
       try {
-        const dark = !document.documentElement.classList.contains('light')
+        // ⚠️ dataset.mode, NOT A CLASS. This asked for a `light` class that
+        // nothing in the app has ever set — index.html and theme.js both write
+        // documentElement.dataset.mode — so it was always false and every
+        // diagram rendered on mermaid's dark theme, including on a light page.
+        // Terminal.jsx already reads the right one.
+        const dark = document.documentElement.dataset.mode !== 'light'
         lastSvg = await renderMermaid(code, host, dark)
       } catch (e) {
         host.innerHTML = ''

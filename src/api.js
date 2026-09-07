@@ -309,6 +309,23 @@ export const api = {
   patchTask: (id, patch) => json('PATCH', `/api/tasks/${id}`, { ...patch, byUser: true }),
   deleteTask: id => json('DELETE', `/api/tasks/${id}`),
   startTask: id => json('POST', `/api/tasks/${id}/start`),
+
+  // ---- loops ----
+  // ⚠️ `advance` IS THE WHOLE RUNNER. It answers with the next turn to run, and
+  // the caller streams it through the ordinary chat path — there is no second
+  // run engine and no server-side driver. Call it once to start and once after
+  // every turn it hands back.
+  listLoops: () => json('GET', '/api/loops'),
+  getLoop: id => json('GET', `/api/loops/${id}`),
+  createLoop: l => json('POST', '/api/loops', l),
+  patchLoop: (id, patch) => json('PATCH', `/api/loops/${id}`, patch),
+  deleteLoop: id => json('DELETE', `/api/loops/${id}`),
+  startLoop: (id, from) => json('POST', `/api/loops/${id}/start`, { from }),
+  stopLoop: id => json('POST', `/api/loops/${id}/stop`),
+  advanceLoop: id => json('POST', `/api/loops/${id}/advance`),
+
+  // ---- graph ----
+  scanGraph: (path, level) => json('POST', '/api/graph/scan', { path, level }),
   searchSessions: q => json('GET', `/api/sessions-search?q=${encodeURIComponent(q)}`),
   createSession: body => json('POST', '/api/sessions', body || {}),
   getSession: id => json('GET', `/api/sessions/${id}`),

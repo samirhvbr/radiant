@@ -91,6 +91,42 @@ ok('the app window\'s own fetch still works', fetched.status === 200, `got HTTP 
 const named = await get({ Host: `localhost:${PORT}`, Origin: `http://localhost:${PORT}` })
 ok('localhost spelt out still works', named.status === 200, `got HTTP ${named.status}`)
 
+// ── the dev-proxy exemption must not exist in a shipped build ───────────────
+// ⚠️ THIS IS A HOLE THAT IS SUPPOSED TO BE SHUT. `npm run dev` serves the UI
+// from Vite on another port, which makes every write cross-origin — reads passed
+// and writes came back 401, because a browser omits Origin on a same-origin GET
+// and sends it on a POST. RADIANT_DEV_ORIGIN reopens the door for exactly one
+// origin. The server above runs WITHOUT it, so this asserts the door is shut
+// when nobody asked for it; the second server asserts the variable is what opens
+// it, rather than something else having quietly started working.
+const vite = await get({ Host: `localhost:5833`, Origin: 'http://localhost:5833' })
+ok('the dev origin is refused when RADIANT_DEV_ORIGIN is not set',
+   vite.status === 401 || vite.status === 403, `got HTTP ${vite.status}`)
+
+const DEV_PORT = PORT + 1
+const devServer = spawn('node', ['server/index.js'], {
+  env: { ...process.env, RADIANT_PORT: String(DEV_PORT), RADIANT_DIR: dir, NODE_ENV: 'production',
+         RADIANT_DEV_ORIGIN: 'http://localhost:5833' },
+  stdio: 'ignore'
+})
+process.on('exit', () => devServer.kill())
+const devBase = `http://127.0.0.1:${DEV_PORT}`
+for (let i = 0; i < 80; i++) {
+  try { if ((await fetch(devBase)).ok) break } catch {}
+  await new Promise(r => setTimeout(r, 250))
+}
+const devGet = h => fetch(`${devBase}/api/config`, { headers: h })
+const devOk = await devGet({ Host: 'localhost:5833', Origin: 'http://localhost:5833' })
+ok('with RADIANT_DEV_ORIGIN set, that one origin is allowed', devOk.status === 200, `got HTTP ${devOk.status}`)
+// It names ONE origin. Setting it must not reopen the door generally.
+const devEvil = await devGet({ Origin: 'https://evil.example.com' })
+ok('and it does not let anything else through',
+   devEvil.status === 401 || devEvil.status === 403, `got HTTP ${devEvil.status}`)
+const devOther = await devGet({ Host: 'localhost:5999', Origin: 'http://localhost:5999' })
+ok('nor another port on loopback',
+   devOther.status === 401 || devOther.status === 403, `got HTTP ${devOther.status}`)
+devServer.kill()
+
 // ── credentials must not ride along in the config payload ───────────────────
 if (bare.status === 200) {
   const cfg = await bare.json()

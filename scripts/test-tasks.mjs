@@ -147,7 +147,12 @@ ok('it can be deleted', !gone.body.some(t => t.id === id))
   // A steer arrives at a task already running; a failed START is what belongs
   // back in Queued. Sending a steered task back would undo real work.
   ok("a failed steer does not send the card back to Queued",
-     /if \(kind !== 'steer'\) api\.patchTask\(taskId, \{ state: 'queued' \}\)/.test(app))
+     /kind !== 'steer'[\s\S]{0,40}api\.patchTask\(taskId, \{ state: 'queued' \}\)/.test(app))
+  // Not every held prompt is a task. The Graph view sends one into a brand-new
+  // chat, which has no card behind it — patching task `undefined` was a 404 that
+  // nothing looked at.
+  ok('and a held prompt with no task does not patch one',
+     /if \(taskId && kind !== 'steer'\)/.test(app))
 }
 
 

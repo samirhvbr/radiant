@@ -11,7 +11,7 @@ import { fileURLToPath } from 'url'
 import { WebSocketServer } from 'ws'
 import pty from 'node-pty'
 import { execSync, spawn } from 'child_process'
-import { RADIANT_DIR, DIR_POINTER, defaultDataDir, dataDirStatus, loadConfig, saveConfig, publicConfig, listSessions, loadSession, saveSession, deleteSession, searchSessions, upsertCredential, activateAccount, removeAccount, SESSIONS_DIR, listProjects, getProject, saveProject, deleteProject, migrateProjects, agentsStore, skillsStore, recipesStore, cloudStatus, MACHINE_KEYS, saveMachineSettings, skillLibrary, inspectSkillFolder, resolveSkillDir, USER_SKILLS_ROOT, repairCloudFolder, builtinAgent, listTasks, loadTask, saveTask, deleteTask, TASK_STATES, saveTurnSession } from './config.js'
+import { RADIANT_DIR, DIR_POINTER, defaultDataDir, dataDirStatus, loadConfig, saveConfig, publicConfig, listSessions, loadSession, saveSession, deleteSession, searchSessions, upsertCredential, activateAccount, removeAccount, SESSIONS_DIR, listProjects, getProject, saveProject, deleteProject, migrateProjects, agentsStore, skillsStore, recipesStore, cloudStatus, MACHINE_KEYS, saveMachineSettings, skillLibrary, inspectSkillFolder, resolveSkillDir, USER_SKILLS_ROOT, repairCloudFolder, builtinAgent, listTasks, loadTask, saveTask, deleteTask, TASK_STATES, listLoops, loadLoop, saveLoop, deleteLoop, LOOP_STATES, saveTurnSession } from './config.js'
 import { runTurn, listModels } from './providers.js'
 import { OAUTH_PROVIDERS, buildAuthUrl, completePaste, startLoopback, validAccessToken, startDevice, pollDevice } from './oauth.js'
 import { checkForUpdate } from './updater.js'
@@ -19,6 +19,8 @@ import { ollamaBin, hermesBin, SPAWN_ENV } from './ollama.js'
 import { commandRisk } from './util.js'
 import { listFacts, addFacts, addFactManual, deleteFact, clearFacts, relevantFacts } from './memory.js'
 import { shouldReflect, reflectionPrompt, parseProposal, addSuggestion } from './skillsmith.js'
+import { scanRepo } from './graph.js'
+import { normalizeStep, workPrompt, checkPrompt, readVerdict } from './loop-rules.js'
 
 const PORT = Number(process.env.RADIANT_PORT || 5834)
 const app = express()
@@ -105,9 +107,22 @@ const LOOPBACK_NAMES = new Set(['127.0.0.1', 'localhost', '::1'])
 let boundPort = PORT
 const bareName = h => String(h || '').replace(/^\[|\]$/g, '')
 
+// ⚠️ ONE EXTRA ORIGIN, AND ONLY WHEN SOMETHING SET IT. `npm run dev` serves the
+// UI from Vite on another port and proxies /api here, so the browser sends
+// Origin: http://localhost:5833 against a server bound to 5834 — a different
+// origin by this rule, and correctly so. The effect was that every write from
+// the dev server came back 401 while reads passed (a browser omits Origin on a
+// same-origin GET and sends it on a POST), so `npm run dev` could show the app
+// but not create a session, send a message or save a setting. Nobody noticed
+// because the packaged app loads from this server's own origin and never
+// crosses ports. The dev script sets this; a shipped build has no such variable,
+// so the allowlist there is exactly what it was.
+const DEV_ORIGIN = process.env.RADIANT_DEV_ORIGIN || null
+
 function allowedOrigin (o) {
   let u
   try { u = new URL(o) } catch { return false }
+  if (DEV_ORIGIN && o === DEV_ORIGIN) return true
   const name = bareName(u.hostname)
   if (LOOPBACK_NAMES.has(name)) return (u.port || '80') === String(boundPort)
   if (remoteUrl) { try { return bareName(new URL(remoteUrl).hostname) === name } catch { return false } }
@@ -116,6 +131,8 @@ function allowedOrigin (o) {
 function allowedHost (h) {
   let u
   try { u = new URL('http://' + String(h || '')) } catch { return false }
+  // The dev proxy forwards the browser's Host as well as its Origin.
+  if (DEV_ORIGIN) { try { if (u.host === new URL(DEV_ORIGIN).host) return true } catch {} }
   const name = bareName(u.hostname)
   if (LOOPBACK_NAMES.has(name)) return (u.port || '80') === String(boundPort)
   if (remoteUrl) { try { return bareName(new URL(remoteUrl).hostname) === name } catch { return false } }
@@ -2106,6 +2123,236 @@ app.post('/api/tasks/:id/start', (req, res) => {
   // The opening message: the goal, plus any detail the person wrote.
   const prompt = task.detail ? `${task.title}\n\n${task.detail}` : task.title
   res.json({ task, sessionId: session.id, prompt, resumed: false })
+})
+
+// ---- loops (the layer above the board) ----
+// ⚠️ THERE IS STILL ONLY ONE RUN ENGINE. A loop does not run turns; it decides
+// which turn should run next and hands it to the client, which streams it
+// exactly as it streams a chat — the same handoff `POST /api/tasks/:id/start`
+// already does. Everything below is bookkeeping between turns.
+//
+// The client's whole job is: call /advance, run whatever it returns, call
+// /advance again. That keeps approvals, steering, tools and the transcript on
+// the one path that already works, and it means a loop is watchable rather than
+// something happening invisibly in the server.
+const LOOP_ID = () => 'loop-' + Math.random().toString(36).slice(2, 10)
+
+/** Build a session for one step. Same shape a task's session has. */
+function sessionForStep (loop, step, kind) {
+  const config = loadConfig()
+  const project = loop.projectId ? getProject(loop.projectId) : null
+  const agentId = kind === 'check' ? step.checkAgentId : step.agentId
+  const agent = agentId ? agentsStore.get(agentId) : null
+  const session = {
+    id: crypto.randomUUID(),
+    title: kind === 'check' ? `Check — ${step.title}` : `${loop.title} — ${step.title}`,
+    autoTitle: false,
+    agentId: agent ? agent.id : null,
+    projectId: project ? project.id : null,
+    provider: step.provider || (agent && agent.provider) || (project && project.provider) || config.settings.defaultProvider || null,
+    model: step.model || (agent && agent.model) || (project && project.model) || config.settings.defaultModel,
+    cwd: loop.cwd || (project && project.cwd) || config.settings.defaultCwd || os.homedir(),
+    useTools: agent ? agent.useTools !== false : true,
+    computerControl: Boolean(agent && agent.computerControl),
+    loopId: loop.id,
+    loopStepId: step.id,
+    createdAt: new Date().toISOString(),
+    messages: []
+  }
+  saveSession(session)
+  return session
+}
+
+/** The text of the last thing the assistant said in a session. */
+function lastAssistantText (sessionId) {
+  const s = sessionId ? loadSession(sessionId) : null
+  if (!s) return ''
+  const m = [...(s.messages || [])].reverse().find(x => x.role === 'assistant')
+  if (!m) return ''
+  if (m.text) return m.text
+  return (m.parts || []).filter(p => p.type === 'text').map(p => p.text).join('\n')
+}
+
+app.get('/api/loops', (req, res) => res.json(listLoops()))
+app.get('/api/loops/:id', (req, res) => {
+  const loop = loadLoop(req.params.id)
+  if (!loop) return res.status(404).json({ error: 'No such loop.' })
+  res.json(loop)
+})
+
+app.post('/api/loops', (req, res) => {
+  const b = req.body || {}
+  const title = String(b.title || '').trim()
+  if (!title) return res.status(400).json({ error: 'A loop needs a goal.' })
+  const steps = (Array.isArray(b.steps) ? b.steps : []).map(s => normalizeStep(s)).filter(s => s.title)
+  if (!steps.length) return res.status(400).json({ error: 'A loop needs at least one step.' })
+  res.json(saveLoop({
+    id: LOOP_ID(),
+    title,
+    detail: String(b.detail || ''),
+    cwd: b.cwd || null,
+    projectId: b.projectId || null,
+    state: 'idle',
+    currentStep: 0,
+    steps,
+    createdAt: new Date().toISOString(),
+    startedAt: null,
+    finishedAt: null
+  }))
+})
+
+app.patch('/api/loops/:id', (req, res) => {
+  const loop = loadLoop(req.params.id)
+  if (!loop) return res.status(404).json({ error: 'No such loop.' })
+  const b = req.body || {}
+  // ⚠️ A RUNNING LOOP IS NOT EDITABLE. Rewriting the steps under a run leaves the
+  // index pointing at a step that no longer exists, and the attempt counts belong
+  // to prompts that are gone.
+  if (loop.state === 'running' && b.steps !== undefined) {
+    return res.status(409).json({ error: 'Stop the loop before changing its steps.' })
+  }
+  if (b.title !== undefined) loop.title = String(b.title).trim() || loop.title
+  if (b.detail !== undefined) loop.detail = String(b.detail)
+  if (b.cwd !== undefined) loop.cwd = b.cwd || null
+  if (b.projectId !== undefined) loop.projectId = b.projectId || null
+  if (Array.isArray(b.steps)) {
+    const byId = new Map(loop.steps.map(s => [s.id, s]))
+    loop.steps = b.steps.map(s => normalizeStep(s, byId.get(s.id))).filter(s => s.title)
+    if (!loop.steps.length) return res.status(400).json({ error: 'A loop needs at least one step.' })
+    loop.currentStep = Math.min(loop.currentStep, loop.steps.length - 1)
+  }
+  res.json(saveLoop(loop))
+})
+
+app.delete('/api/loops/:id', (req, res) => { deleteLoop(req.params.id); res.json({ ok: true }) })
+
+// Start, or start over. Everything a previous run wrote is cleared here so the
+// step states cannot be a mix of this run and the last one.
+app.post('/api/loops/:id/start', (req, res) => {
+  const loop = loadLoop(req.params.id)
+  if (!loop) return res.status(404).json({ error: 'No such loop.' })
+  const from = Number(req.body?.from)
+  const start = Number.isFinite(from) ? Math.min(Math.max(0, Math.round(from)), loop.steps.length - 1) : 0
+  loop.steps = loop.steps.map((s, i) => (i < start ? s : { ...s, state: 'pending', attempts: 0, sessionId: null, checkSessionId: null, lastFail: null, startedAt: null, finishedAt: null }))
+  loop.currentStep = start
+  loop.state = 'running'
+  loop.startedAt = new Date().toISOString()
+  loop.finishedAt = null
+  res.json(saveLoop(loop))
+})
+
+app.post('/api/loops/:id/stop', (req, res) => {
+  const loop = loadLoop(req.params.id)
+  if (!loop) return res.status(404).json({ error: 'No such loop.' })
+  if (loop.state === 'running') loop.state = 'idle'
+  for (const s of loop.steps) if (s.state === 'working' || s.state === 'checking') s.state = 'pending'
+  res.json(saveLoop(loop))
+})
+
+/**
+ * The pump. Call it once when a loop starts and once after every turn it hands
+ * back; it answers with the next turn to run, or with why there isn't one.
+ *
+ * action: 'work' | 'check' → stream `prompt` into `sessionId`, then call again
+ *         'done' | 'failed' | 'idle' → nothing left to run
+ */
+app.post('/api/loops/:id/advance', (req, res) => {
+  let loop = loadLoop(req.params.id)
+  if (!loop) return res.status(404).json({ error: 'No such loop.' })
+  if (loop.state !== 'running') return res.json({ loop, action: loop.state === 'done' ? 'done' : loop.state === 'failed' ? 'failed' : 'idle' })
+
+  const finish = (state) => {
+    loop.state = state
+    loop.finishedAt = new Date().toISOString()
+    loop = saveLoop(loop)
+    return res.json({ loop, action: state })
+  }
+
+  // Walk forward: a step may resolve without needing a turn (no check to run,
+  // nothing left to do), and the client should not have to round-trip for that.
+  for (let guard = 0; guard < loop.steps.length * 2 + 4; guard++) {
+    if (loop.currentStep >= loop.steps.length) return finish('done')
+    const step = loop.steps[loop.currentStep]
+
+    if (step.state === 'pending') {
+      step.attempts++
+      step.state = 'working'
+      step.startedAt = step.startedAt || new Date().toISOString()
+      // ⚠️ A RETRY GETS A FRESH CONVERSATION. Reusing the session meant the
+      // failed attempt was still in the context, and the model treated its own
+      // earlier answer as settled work — the second attempt read as "as I said".
+      const session = sessionForStep(loop, step, 'work')
+      step.sessionId = session.id
+      loop = saveLoop(loop)
+      return res.json({ loop, action: 'work', sessionId: session.id, stepId: step.id, prompt: workPrompt(loop, step) })
+    }
+
+    if (step.state === 'working') {
+      if (!step.check) {
+        // No condition to meet: the step is done when the turn is done. Honest,
+        // and clearly weaker — the view says so.
+        step.state = 'passed'
+        step.finishedAt = new Date().toISOString()
+        loop.currentStep++
+        continue
+      }
+      step.state = 'checking'
+      const same = !step.checkAgentId
+      const session = same ? loadSession(step.sessionId) : sessionForStep(loop, step, 'check')
+      if (!session) { step.state = 'pending'; loop = saveLoop(loop); continue }
+      step.checkSessionId = session.id
+      loop = saveLoop(loop)
+      return res.json({ loop, action: 'check', sessionId: session.id, stepId: step.id, prompt: checkPrompt(loop, step, same) })
+    }
+
+    if (step.state === 'checking') {
+      const { pass, reason } = readVerdict(lastAssistantText(step.checkSessionId))
+      if (pass) {
+        step.state = 'passed'
+        step.lastFail = null
+        step.finishedAt = new Date().toISOString()
+        loop.currentStep++
+        continue
+      }
+      step.lastFail = reason
+      if (step.attempts >= step.maxAttempts) {
+        step.state = 'failed'
+        step.finishedAt = new Date().toISOString()
+        return finish('failed')
+      }
+      step.state = 'pending'
+      continue
+    }
+
+    // passed / failed / skipped — move on.
+    if (step.state === 'failed') return finish('failed')
+    loop.currentStep++
+  }
+  // Only reachable if the walk above stopped making progress, which would be a
+  // bug here rather than a state a person can get into. Say so instead of looping.
+  loop.state = 'blocked'
+  loop = saveLoop(loop)
+  return res.json({ loop, action: 'blocked', error: 'The loop stopped making progress.' })
+})
+
+// ---- graphs ----
+// ⚠️ THE SCAN IS SYNCHRONOUS AND IT IS CAPPED. It runs on the same process that
+// streams chat, so the caps in graph.js are what stop a mistyped path — a home
+// folder, a mounted volume — from stalling a turn. See MAX_FILES/MAX_DEPTH there.
+app.post('/api/graph/scan', (req, res) => {
+  const raw = String(req.body?.path || '').trim()
+  if (!raw) return res.status(400).json({ error: 'Point at a folder first.' })
+  const dir = raw.startsWith('~') ? path.join(os.homedir(), raw.slice(1)) : raw
+  if (!path.isAbsolute(dir)) return res.status(400).json({ error: 'Use a full path, starting with /.' })
+  let st
+  try { st = fs.statSync(dir) } catch { return res.status(404).json({ error: `There is nothing at ${dir}.` }) }
+  // Pointing at a file is a reasonable thing to do by accident; read its folder.
+  const root = st.isDirectory() ? dir : path.dirname(dir)
+  try {
+    res.json(scanRepo(root, { level: req.body?.level === 'file' ? 'file' : 'folder' }))
+  } catch (e) {
+    res.status(500).json({ error: `Could not read that folder: ${e.message}` })
+  }
 })
 
 // `active` reports whether a turn is streaming for this session right now.

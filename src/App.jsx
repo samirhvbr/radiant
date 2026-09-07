@@ -7,6 +7,8 @@ import Chat, { GroupPicker } from './components/Chat.jsx'
 import RightPanel from './components/RightPanel.jsx'
 import Settings from './components/Settings.jsx'
 import TaskBoard from './components/TaskBoard.jsx'
+import LoopBoard from './components/LoopBoard.jsx'
+import GraphView from './components/GraphView.jsx'
 import MotionBackground from './components/MotionBackground.jsx'
 import CommandPalette from './components/CommandPalette.jsx'
 import ComparePanel from './components/ComparePanel.jsx'
@@ -62,9 +64,16 @@ function DesktopApp () {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [compareOpen, setCompareOpen] = useState(false)
   const [navOpen, setNavOpen] = useState(false) // mobile sidebar drawer
-  // Which top-level place you are in. Chat and Tasks swap the main area; Agents
-  // opens the library that already exists rather than a second copy of it.
+  // Which top-level place you are in. Chat, Tasks, Loops and Graph swap the main
+  // area; Agents opens the library that already exists rather than a second copy.
   const [view, setView] = useState('chat')
+  // ⚠️ THIS WINDOW IS THE LOOP RUNNER. The server decides what runs next but
+  // never runs it — the turns go through the ordinary chat path below, which is
+  // why approvals, steering and the transcript all keep working inside a loop
+  // without being reimplemented. It also means a loop only advances while
+  // Radiant is open on it; the Loops view says so rather than looking busy.
+  const [loopRun, setLoopRun] = useState(null)      // { loopId, stepId } being driven here
+  const loopTurnRef = useRef(null)                  // the one turn we dispatched: { loopId, sessionId }
   // ⚠️ send() READS `session` FROM ITS CLOSURE, so calling it in the same tick as
   // openSession() sees the previous session and returns silently. That left a
   // started task sitting in Working with an empty transcript — a card claiming
@@ -225,6 +234,9 @@ function DesktopApp () {
     setApproval(null)
     setError(null)
     refreshSessions()
+    // Returned so a caller can send straight into it — the Graph view opens a
+    // chat about a scan it just did. Every older caller ignores this.
+    return s
   }
 
   // Skills added to THIS chat with a slash command. Persisted on the session so
@@ -320,15 +332,25 @@ function DesktopApp () {
   useEffect(() => {
     if (!pendingPrompt || !session || session.id !== pendingPrompt.sessionId) return
     if (live?.streaming) return
-    const { text, taskId, kind } = pendingPrompt
+    const { text, taskId, loopId, kind } = pendingPrompt
     setPendingPrompt(null)
     // A session with no model cannot run. Put the card back rather than leaving
     // it in Working forever: the board must not outlive the thing it describes.
     if (!session.provider || !session.model) {
-      setError('Pick a model for this chat, then start the task again.')
+      setError('Pick a model for this chat, then start it again.')
+      // A loop cannot pick its own model, so stop it rather than letting it sit
+      // marked Running with nothing happening.
+      if (loopId) {
+        loopTurnRef.current = null
+        setLoopRun(null)
+        api.stopLoop(loopId).catch(() => {})
+        return
+      }
       // Only a failed START belongs back in Queued. A steer arrives at a task
-      // that is already running; sending it back would undo real work.
-      if (kind !== 'steer') api.patchTask(taskId, { state: 'queued' }).catch(() => {})
+      // that is already running; sending it back would undo real work. And not
+      // every held prompt comes from the board at all — the Graph view sends one
+      // into a brand-new chat — so there may be no card to put back.
+      if (taskId && kind !== 'steer') api.patchTask(taskId, { state: 'queued' }).catch(() => {})
       return
     }
     send(text)
@@ -336,6 +358,51 @@ function DesktopApp () {
 
   const openSessionRef = useRef(null)
   useEffect(() => { openSessionRef.current = session?.id || null }, [session?.id])
+
+  /**
+   * The loop runner, in full: ask the server what runs next, run it in the chat,
+   * ask again. Every decision — which step, whether it passed, whether to retry
+   * — is made server-side from the transcript, so a client that stops pumping
+   * loses nothing but momentum, and one that lied could not fake a pass.
+   */
+  const pumpLoop = async loopId => {
+    let r
+    try { r = await api.advanceLoop(loopId) } catch (e) {
+      loopTurnRef.current = null; setLoopRun(null); setError(e.message); return
+    }
+    if (r.action === 'work' || r.action === 'check') {
+      setLoopRun({ loopId, stepId: r.stepId })
+      // ⚠️ MARK THE TURN BEFORE DISPATCHING IT, and only this one. The pump fires
+      // from the end of send(), so without an exact session match every message
+      // you typed yourself into a step's chat would advance the loop under you.
+      loopTurnRef.current = { loopId, sessionId: r.sessionId }
+      setView('chat')
+      await openSession(r.sessionId)
+      setPendingPrompt({ sessionId: r.sessionId, text: r.prompt, loopId, kind: 'loop' })
+      return
+    }
+    loopTurnRef.current = null
+    setLoopRun(null)
+    if (r.action === 'failed') {
+      const bad = (r.loop?.steps || []).find(x => x.state === 'failed')
+      setError(bad
+        ? `"${r.loop.title}" stopped at "${bad.title}" after ${bad.attempts} attempts. The check said: ${bad.lastFail}`
+        : `"${r.loop?.title || 'That loop'}" stopped without finishing.`)
+    }
+  }
+
+  const runLoop = async loop => {
+    try {
+      await api.startLoop(loop.id)
+      await pumpLoop(loop.id)
+    } catch (e) { setError(e.message) }
+  }
+
+  const stopLoop = async loop => {
+    loopTurnRef.current = null
+    setLoopRun(null)
+    try { await api.stopLoop(loop.id) } catch (e) { setError(e.message) }
+  }
 
   const send = async content => {
     if (!session || live?.streaming) return
@@ -459,6 +526,11 @@ function DesktopApp () {
         setSession(prev => (prev && prev.id === sessionId ? fresh : prev))
       } catch {}
       refreshSessions()
+      // ⚠️ AFTER THE TRANSCRIPT IS SAVED, NOT BEFORE. The server reads the last
+      // assistant message to find the check's verdict, so advancing any earlier
+      // would judge the previous turn — or an empty session on the first step.
+      const lt = loopTurnRef.current
+      if (lt && lt.sessionId === sessionId) { loopTurnRef.current = null; pumpLoop(lt.loopId) }
     }
   }
 
@@ -524,7 +596,37 @@ function DesktopApp () {
         updateInfo={updateInfo}
         onUpdate={() => { setNavOpen(false); if (window.radiantNative?.openSettings) window.radiantNative.openSettings('about'); else { setSettingsTab('about'); setSettingsOpen(true) } }}
       />
-      {view === 'tasks' ? (
+      {view === 'loops' ? (
+        <LoopBoard
+          agents={config.agents || []}
+          models={models}
+          projects={projects}
+          defaultCwd={session?.cwd || config.settings.defaultCwd || ''}
+          runningLoopId={loopRun?.loopId || null}
+          runningStepId={loopRun?.stepId || null}
+          onRun={runLoop}
+          onStop={stopLoop}
+          onOpenSession={id => { setView('chat'); openSession(id) }}
+          onError={setError}
+          onRefreshModels={refreshModels}
+        />
+      ) : view === 'graph' ? (
+        <GraphView
+          defaultPath={session?.cwd || config.settings.defaultCwd || ''}
+          mode={config.settings.mode}
+          onError={setError}
+          onExplain={async text => {
+            // A scan is a fact; what it means is a conversation. Hand the real
+            // diagram over rather than pointing the model at the repo again and
+            // getting a second, different opinion of it.
+            try {
+              const s = await newSession()
+              setView('chat')
+              setPendingPrompt({ sessionId: s.id, text })
+            } catch (e) { setError(e.message) }
+          }}
+        />
+      ) : view === 'tasks' ? (
         <TaskBoard
           agents={config.agents || []}
           models={models}

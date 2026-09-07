@@ -441,7 +441,11 @@ code, pre, .mono { font-family: var(--font-mono); }
   .brand-mark.working { animation: none; filter: drop-shadow(0 0 5px var(--accent)); }
 }
 
-.sidebar-switch { display: flex; gap: 3px; margin: 0 12px 8px; padding: 3px; background: var(--bg-input); border-radius: 9px; }
+/* Two rows, one control. Where you are on top, what you are building below —
+   they are different questions, so they get different tracks, and only the row
+   you are in carries a pill. */
+.sidebar-tabs { display: flex; flex-direction: column; gap: 4px; margin: 0 12px 8px; }
+.sidebar-switch { display: flex; gap: 3px; padding: 3px; background: var(--bg-input); border-radius: 9px; }
 .sidebar-switch button { flex: 1; padding: 5px; border: none; border-radius: 6px; background: none; color: var(--text-muted); font-size: 12px; font-weight: 500; }
 /* ⚠️ THE SELECTED TAB IS THE ONLY THING SAYING WHICH VIEW YOU ARE IN, so it gets
    the accent — the same thing that marks "current" everywhere else in the app.
@@ -2500,20 +2504,30 @@ button.hf-head:hover { background: var(--bg-hover); }
 .tmpl-card:hover, .agent-card:hover { transform: translateY(-2px); }
 .dev-card { transition: box-shadow 0.22s var(--spring-soft), border-color 0.22s ease; }
 
-/* The tab pill GLIDES between tabs instead of jumping. The three buttons are
-   flex:1, so the pill is exactly a third of the track and moves by whole steps.
+/* The tab pill GLIDES between tabs instead of jumping. The buttons are flex:1,
+   so the pill is exactly one share of the track and moves by whole steps.
    ⚠️ The pill is a pseudo-element on the track, NOT a background on the button —
-   a background cannot travel between two elements, which is why this jumped. */
+   a background cannot travel between two elements, which is why this jumped.
+   ⚠️ AND ITS WIDTH IS --tab-n, NOT A THIRD. Two rows now, of two tabs and three:
+   the hardcoded third drew a pill two-thirds the width of the button it was
+   meant to sit under, so "Chat" was selected and the highlight covered the gap.
+   The track is 3px padding each side and 3px between buttons, which is where
+   the 6px and the (n - 1) come from. */
 .sidebar-switch { position: relative; }
 .sidebar-switch::before {
   content: ''; position: absolute; z-index: 0;
   top: 3px; bottom: 3px; left: 3px;
-  width: calc((100% - 6px - 6px) / 3);
+  width: calc((100% - 6px - (var(--tab-n, 3) - 1) * 3px) / var(--tab-n, 3));
   border-radius: 6px; background: var(--accent);
   box-shadow: var(--shadow-sm);
   transform: translateX(calc(var(--tab-i, 0) * (100% + 3px)));
-  transition: transform 0.34s var(--spring);
+  transition: transform 0.34s var(--spring), opacity 0.2s ease;
 }
+/* ⚠️ THE ROW YOU ARE NOT IN HAS NO SELECTION, so it must not draw one. Both rows
+   showing a filled pill reads as two things being open at once. Hidden, not
+   removed, so returning to the row glides from where you left it rather than
+   sliding in from the first tab. */
+.sidebar-switch.is-off::before { opacity: 0; }
 .sidebar-switch button { position: relative; z-index: 1; }
 
 /* A list that arrives all at once reads as a flash; staggered, it reads as
@@ -2846,4 +2860,183 @@ button.hf-head:hover { background: var(--bg-hover); }
 /* An armed delete looks armed. Without this the second click is a guess. */
 .session-actions button.is-armed {
   color: var(--danger); background: color-mix(in oklch, var(--danger) 18%, transparent);
+}
+
+/* ── loops ──────────────────────────────────────────────────────────────────
+   The board's vocabulary, one layer up. A card is a run rather than a job, and
+   the row that matters is the step that is going: it gets the accent, and the
+   step states get colour only where colour means something — passed, failed,
+   and the one being worked on. */
+.lp { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); overflow-y: auto; }
+.lp-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  padding: 14px 18px 10px; gap: 12px;
+}
+.lp-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
+.lp-sub { margin: 3px 0 0; font-size: 11.5px; color: var(--text-muted); line-height: 1.5; max-width: 46ch; }
+.lp-new, .lp-save {
+  flex: none; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line, transparent);
+  background: var(--bg-raised); color: var(--text); font: inherit; font-size: 12px; cursor: pointer;
+}
+.lp-new:hover, .lp-save:hover { background: var(--bg-hover); }
+.lp-save:disabled { opacity: .45; cursor: default; }
+
+.lp-compose { display: flex; flex-direction: column; gap: 9px; padding: 0 18px 14px; }
+.lp-input {
+  width: 100%; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--bg-hover); background: var(--bg-input);
+  color: var(--text); font: inherit; font-size: 13px;
+}
+.lp-input-lead { font-size: 14px; }
+.lp-area { resize: vertical; min-height: 44px; }
+.lp-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+/* The condition is the point of the whole feature, so it does not look like
+   another optional box. */
+.lp-check-input { border-color: color-mix(in oklch, var(--accent) 45%, var(--bg-hover)); }
+
+.lp-edit {
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 10px; border-radius: 12px; background: var(--bg-panel);
+}
+.lp-edit-head { display: flex; align-items: center; justify-content: space-between; }
+.lp-edit-n { font-size: 11px; font-weight: 600; color: var(--text-muted); }
+.lp-edit-foot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.lp-pick { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.lp-pick > span, .lp-tries > span { font-size: 11px; color: var(--text-faint); }
+.lp-tries { display: flex; align-items: center; gap: 6px; }
+.lp-tries input {
+  width: 46px; padding: 5px 6px; border-radius: 7px;
+  border: 1px solid var(--bg-hover); background: var(--bg-input);
+  color: var(--text); font: inherit; font-size: 12px;
+}
+.lp-compose-foot { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.lp-compose-foot .lp-save { margin-left: auto; }
+.lp-warn { font-size: 11px; color: var(--accent); line-height: 1.45; max-width: 44ch; }
+
+.lp-blank { padding: 8px 18px 20px; max-width: 56ch; }
+.lp-blank-lead { margin: 0 0 4px; font-size: 13px; color: var(--text); }
+.lp-blank-sub { margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+
+.lp-list { display: flex; flex-direction: column; gap: 12px; padding: 0 18px 18px; }
+.lp-card { border-radius: 14px; background: var(--bg-panel); padding: 12px 14px; }
+.lp-card.is-running { box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--accent) 55%, transparent); }
+.lp-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.lp-card-title { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--text); }
+.lp-card-state { margin-top: 2px; font-size: 11px; color: var(--text-muted); }
+.lp-card-cwd { color: var(--text-faint); }
+.lp-card-acts { display: flex; gap: 6px; flex: none; }
+.lp-note { margin: 8px 0 0; font-size: 11px; color: var(--accent); line-height: 1.45; }
+
+.lp-mini {
+  padding: 4px 9px; border-radius: 7px; border: 1px solid var(--line, transparent);
+  background: var(--bg-raised); color: var(--text); font: inherit; font-size: 11px; cursor: pointer;
+}
+.lp-mini:hover { background: var(--bg-hover); }
+.lp-mini:disabled { opacity: .4; cursor: default; }
+.lp-mini-quiet { color: var(--text-faint); background: transparent; }
+.lp-mini-go { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+
+.lp-bar { height: 3px; border-radius: 2px; background: var(--bg-input); overflow: hidden; margin: 10px 0 4px; }
+.lp-bar > i { display: block; height: 100%; background: var(--accent); transition: width .3s ease; }
+
+.lp-steps { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.lp-step { display: flex; gap: 10px; padding: 8px 6px; border-radius: 9px; }
+.lp-step.is-current { background: var(--bg-input); }
+.lp-step-n {
+  flex: none; width: 20px; height: 20px; border-radius: 50%;
+  display: grid; place-items: center; margin-top: 1px;
+  background: var(--bg-input); color: var(--text-faint);
+  font-size: 10.5px; font-weight: 600;
+}
+.lp-step.is-passed .lp-step-n { background: var(--ok, oklch(0.72 0.15 155)); color: var(--bg); }
+.lp-step.is-failed .lp-step-n { background: var(--accent); color: var(--on-accent); }
+.lp-step.is-working .lp-step-n, .lp-step.is-checking .lp-step-n { background: var(--accent); color: var(--on-accent); }
+.lp-step-main { min-width: 0; flex: 1; }
+.lp-step-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.lp-step-title { margin: 0; font-size: 12.5px; font-weight: 600; color: var(--text); line-height: 1.35; }
+.lp-step-state { flex: none; font-size: 10.5px; color: var(--text-faint); }
+.lp-step.is-failed .lp-step-state { color: var(--accent); }
+.lp-step-who { margin-top: 2px; font-size: 11px; color: var(--text-muted); }
+.lp-step-checker, .lp-step-tries { color: var(--text-faint); }
+.lp-step-check { margin-top: 4px; font-size: 11px; color: var(--text-muted); line-height: 1.45; }
+.lp-check-lead { color: var(--text-faint); }
+/* A step with nothing verifying it should look like the weaker thing it is. */
+.lp-step-nocheck { color: var(--text-faint); font-style: italic; }
+.lp-step-fail { margin-top: 4px; font-size: 11px; color: var(--accent); line-height: 1.45; }
+.lp-step .lp-mini { margin-top: 6px; }
+
+/* ── graph ──────────────────────────────────────────────────────────────────
+   The drawing gets the room; everything measured about it sits in a column
+   beside it, because the numbers are what you check the picture against. */
+.gv { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
+.gv-head { display: flex; align-items: center; gap: 12px; padding: 14px 18px 8px; }
+.gv-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); flex: none; }
+.gv-point { flex: 1; display: flex; gap: 8px; min-width: 0; }
+.gv-path {
+  flex: 1; min-width: 0; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--bg-hover); background: var(--bg-input);
+  color: var(--text); font: inherit; font-size: 12.5px;
+}
+.gv-path:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.gv-draw {
+  flex: none; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--accent);
+  background: var(--accent); color: var(--on-accent); font: inherit; font-size: 12px; cursor: pointer;
+}
+.gv-draw:disabled { opacity: .45; cursor: default; }
+
+.gv-levels { display: flex; gap: 4px; padding: 0 18px 10px; }
+.gv-level {
+  padding: 4px 10px; border-radius: 7px; border: 1px solid var(--line, transparent);
+  background: var(--bg-raised); color: var(--text-muted); font: inherit; font-size: 11.5px; cursor: pointer;
+}
+.gv-level.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.gv-error { margin: 0 18px 12px; font-size: 12px; color: var(--accent); line-height: 1.5; }
+
+.gv-blank { padding: 4px 18px 20px; max-width: 58ch; }
+.gv-blank-lead { margin: 0 0 4px; font-size: 13px; color: var(--text); }
+.gv-blank-sub { margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+
+.gv-body { flex: 1; min-height: 0; display: flex; gap: 14px; padding: 0 18px 18px; }
+.gv-canvas {
+  flex: 1; min-width: 0; overflow: auto;
+  border-radius: 14px; background: var(--bg-panel); padding: 16px;
+}
+/* ⚠️ mermaid SIZES ITS SVG TO THE BOX IT IS GIVEN. Without a width the diagram
+   collapses to a sliver in a flex child; without the scroll above, a wide one is
+   clipped with no way to reach the rest of it. */
+.gv-mermaid { min-width: min-content; }
+.gv-mermaid svg { max-width: none; height: auto; }
+
+.gv-side {
+  flex: none; width: 236px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.gv-stat-row { display: flex; gap: 8px; }
+.gv-stat {
+  flex: 1; border-radius: 10px; background: var(--bg-panel); padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.gv-stat b { font-size: 15px; font-weight: 600; color: var(--text); }
+.gv-stat span { font-size: 10px; color: var(--text-faint); }
+.gv-note { margin: 0; font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+.gv-note.gv-warn { color: var(--accent); }
+.gv-block { display: flex; flex-direction: column; gap: 5px; }
+.gv-block-title { margin: 0; font-size: 11px; font-weight: 600; color: var(--text); }
+.gv-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.gv-list li { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--text-muted); }
+.gv-list code { font-size: 11px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gv-dim { color: var(--text-faint); flex: none; }
+.gv-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 6px; }
+.gv-act {
+  padding: 5px 10px; border-radius: 7px; border: 1px solid var(--line, transparent);
+  background: var(--bg-raised); color: var(--text); font: inherit; font-size: 11.5px; cursor: pointer;
+}
+.gv-act:hover { background: var(--bg-hover); }
+.gv-act:disabled { opacity: .4; cursor: default; }
+
+/* A narrow window puts the numbers under the drawing rather than squeezing both. */
+@media (max-width: 900px) {
+  .gv-body { flex-direction: column; }
+  .gv-side { width: auto; flex: none; }
+  .gv-acts { margin-top: 0; }
 }

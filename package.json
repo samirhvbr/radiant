@@ -1,6 +1,6 @@
 {
   "name": "radiant",
-  "version": "0.6.238",
+  "version": "0.6.239",
   "private": true,
   "description": "Radiant — a local coding harness: chat with coding agents across cloud and local models.",
   "author": "Tony Ricciardi",
@@ -8,7 +8,7 @@
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "concurrently -k -n server,ui \"node server/index.js\" \"vite --port 5833 --strictPort\"",
+    "dev": "concurrently -k -n server,ui \"RADIANT_DEV_ORIGIN=http://localhost:5833 node server/index.js\" \"vite --port 5833 --strictPort\"",
     "build": "vite build",
     "start": "NODE_ENV=production node server/index.js",
     "compile:helper": "swiftc -O native/RadiantControl.swift -o native/radiant-control -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker native/Info.plist",

@@ -317,7 +317,24 @@ ok('with the record cleared', !(back.removedAgents || []).includes('agent-financ
   ok('the dead duplicate control is gone', !/^\.view-tab[.:\s{]/m.test(tcss))
 
   const sb = tfs.readFileSync('src/components/Sidebar.jsx', 'utf8')
-  ok('and the sidebar still renders that class', /className='sidebar-switch'/.test(sb))
+  // ⚠️ MATCH THE INTENT, NOT THE LITERAL. This looked for the exact string
+  // className='sidebar-switch' and broke the moment the class became conditional
+  // — the control was still there, still the only one. What must not come back
+  // is a SECOND segmented control stacked above the brand, which is what
+  // .view-tab was; that is asserted above.
+  ok('and the sidebar still renders that class', /sidebar-switch/.test(sb))
+  // Two rows now: Chat/Agents on top, Task/Loop/Graph below.
+  ok('the switcher has both rows', (sb.match(/'sidebar-switch'/g) || []).length === 2,
+     String((sb.match(/'sidebar-switch'/g) || []).length))
+  // ⚠️ THE PILL'S WIDTH HAS TO FOLLOW THE ROW IT IS IN. Two tabs on top and
+  // three below; a hardcoded third drew a pill two-thirds the width of the
+  // button it was meant to sit under.
+  ok('the pill sizes itself from the number of tabs', /--tab-n/.test(tcss) && !/\/ 3\)\s*;/.test(
+    tcss.slice(tcss.indexOf('.sidebar-switch::before'), tcss.indexOf('.sidebar-switch::before') + 400)))
+  ok('and each row sets it', /--tab-n':\s*2/.test(sb) && /--tab-n':\s*3/.test(sb))
+  // The row you are not in must not draw a selection.
+  ok('the row with no selection hides its pill',
+     /\.sidebar-switch\.is-off::before/.test(tcss) && /is-off/.test(sb))
 }
 
 // ⚠️ A CONFIRMATION MUST FOLLOW THE SUCCESS, NOT THE CLICK. Copy said nothing at

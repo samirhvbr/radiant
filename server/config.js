@@ -90,6 +90,7 @@ export const RADIANT_DIR = resolveDataDir()
 export const SESSIONS_DIR = path.join(RADIANT_DIR, 'sessions')
 export const PROJECTS_DIR = path.join(RADIANT_DIR, 'projects')
 export const TASKS_DIR = path.join(RADIANT_DIR, 'tasks')
+export const LOOPS_DIR = path.join(RADIANT_DIR, 'loops')
 const CONFIG_PATH = path.join(RADIANT_DIR, 'config.json')
 
 /** What the UI needs to describe the current location honestly. */
@@ -374,6 +375,7 @@ function ensureDirs () {
   fs.mkdirSync(SESSIONS_DIR, { recursive: true })
   fs.mkdirSync(PROJECTS_DIR, { recursive: true })
   fs.mkdirSync(TASKS_DIR, { recursive: true })
+  fs.mkdirSync(LOOPS_DIR, { recursive: true })
 }
 
 // ⚠️ A HALF-WRITTEN FILE IN A CLOUD FOLDER GETS SYNCED AS-IS. writeFileSync
@@ -992,6 +994,54 @@ export function saveTask (task) {
 export function deleteTask (id) {
   if (!/^[a-z0-9-]+$/.test(id)) return
   try { fs.unlinkSync(path.join(TASKS_DIR, id + '.json')) } catch {}
+}
+
+// ---- loops ----
+// A task is one turn with a goal. A LOOP is the layer above it: an ordered run
+// of steps, each with its own agent, where a step is not finished because the
+// model stopped talking — it is finished because a check said so.
+//
+// ⚠️ THE CHECK IS THE WHOLE POINT. Without it this is a numbered list of tasks,
+// which is what the board already is. A step carries a plain-English condition;
+// when the working turn ends, the same model is asked, in a clean turn with the
+// work in front of it, whether that condition is met. FAIL sends the step round
+// again with the reason attached, up to `maxAttempts`. That retry is the loop.
+//
+// State lives here rather than in the client because a loop outlives the view:
+// close the tab mid-run and the step, the attempt count and the reason the last
+// attempt failed are all still on disk.
+export const LOOP_STATES = ['idle', 'running', 'blocked', 'failed', 'done']
+export const STEP_STATES = ['pending', 'working', 'checking', 'passed', 'failed', 'skipped']
+
+export function listLoops () {
+  ensureDirs()
+  return fs.readdirSync(LOOPS_DIR)
+    .filter(f => f.endsWith('.json'))
+    .map(f => { try { return JSON.parse(fs.readFileSync(path.join(LOOPS_DIR, f), 'utf8')) } catch { return null } })
+    .filter(Boolean)
+    .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+}
+
+export function loadLoop (id) {
+  if (!/^[a-z0-9-]+$/.test(id)) return null
+  try { return JSON.parse(fs.readFileSync(path.join(LOOPS_DIR, id + '.json'), 'utf8')) } catch { return null }
+}
+
+export function saveLoop (loop) {
+  ensureDirs()
+  if (!/^[a-z0-9-]+$/.test(loop.id)) throw new Error('bad loop id')
+  if (!LOOP_STATES.includes(loop.state)) throw new Error(`unknown loop state: ${loop.state}`)
+  for (const s of loop.steps || []) {
+    if (!STEP_STATES.includes(s.state)) throw new Error(`unknown step state: ${s.state}`)
+  }
+  loop.updatedAt = new Date().toISOString()
+  writeJsonAtomic(path.join(LOOPS_DIR, loop.id + '.json'), loop)
+  return loop
+}
+
+export function deleteLoop (id) {
+  if (!/^[a-z0-9-]+$/.test(id)) return
+  try { fs.unlinkSync(path.join(LOOPS_DIR, id + '.json')) } catch {}
 }
 
 // Permanent: unlinks the transcript, every message and every tool call with it.
