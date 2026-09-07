@@ -38,6 +38,15 @@ for (let i = 0; i < 60; i++) {
 
 const browser = await chromium.launch({ channel: 'chrome', headless: true })
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+// ⚠️ ELECTRON-ONLY CONTROLS DO NOT EXIST IN A BROWSER, AND THAT IS HOW THE HUD
+// BUTTON GOT THROUGH. .hud-open renders only when window.radiantNative.toggleHud
+// is present, so this gate ran green while the real app had an unclickable
+// button. Stub the native bridge so those controls render and get checked.
+await page.addInitScript(() => {
+  window.radiantNative = window.radiantNative || {
+    toggleHud: () => {}, pickFolder: async () => null, openExternal: () => {}
+  }
+})
 await page.goto(base, { waitUntil: 'networkidle' })
 await page.waitForSelector('.app', { timeout: 15000 }).catch(() => {})
 
@@ -54,17 +63,28 @@ ok('the main pane offers a drag handle (.topbar or .main-drag)', main.includes('
 ok('the sidebar brand is a drag handle', await region('.brand') === 'drag')
 
 // ── the exemptions: nothing clickable may sit inside a drag region ───────────
+// ⚠️ A DRAG REGION IS A RECTANGLE, NOT A SUBTREE. The first version of this
+// check only walked descendants of each drag bar, so it missed .hud-open —
+// position:absolute at the top-right of the sidebar, landing inside .brand's
+// rect without being inside .brand. Anything INTERSECTING a drag rect is
+// swallowed, child or not, so intersection is what gets tested.
 const swallowed = await page.evaluate(() => {
   const bars = ['.topbar', '.brand', '.right-tabs', '.main-drag']
+  const region = el => getComputedStyle(el).getPropertyValue('-webkit-app-region')
+  const rect = el => el.getBoundingClientRect()
+  const hits = (a, b) => !(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top)
+  const dragRects = bars
+    .map(b => document.querySelector(b))
+    .filter(el => el && region(el) === 'drag')
+    .map(el => ({ sel: el.className || el.tagName, r: rect(el) }))
+  if (!dragRects.length) return []
   const bad = []
-  for (const bar of bars) {
-    const root = document.querySelector(bar)
-    if (!root || getComputedStyle(root).getPropertyValue('-webkit-app-region') !== 'drag') continue
-    for (const el of root.querySelectorAll('button, a, input, select, textarea, [role="button"], [data-tip]')) {
-      if (getComputedStyle(el).getPropertyValue('-webkit-app-region') !== 'no-drag') {
-        bad.push(`${bar} > ${el.tagName.toLowerCase()}.${el.className || '(no class)'}`)
-      }
-    }
+  for (const el of document.querySelectorAll('button, a, input, select, textarea, [role="button"], [data-tip]')) {
+    const r = rect(el)
+    if (!r.width || !r.height) continue                       // hidden
+    if (region(el) === 'no-drag') continue
+    const over = dragRects.find(d => hits(r, d.r))
+    if (over) bad.push(`${el.tagName.toLowerCase()}.${el.className || '(no class)'} overlaps the drag region .${over.sel}`)
   }
   return bad
 })

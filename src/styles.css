@@ -2649,7 +2649,19 @@ button.hf-head:hover { background: var(--bg-hover); }
 .topbar [role='button'], .topbar [data-tip],
 .brand button, .brand a, .brand [role='button'],
 .right-tabs button, .right-tabs a, .right-tabs [role='button'],
-.right-resize { -webkit-app-region: no-drag; }
+.right-resize,
+/* ⚠️ NOT A DESCENDANT OF .brand — IT SITS ON TOP OF IT. .hud-open is
+   position:absolute at top:10 right:10 of the sidebar, so it lands inside
+   .brand's rectangle {0,0,247,74} without being inside .brand. The exemptions
+   above are all descendant selectors, which is why this one was swallowed: a
+   drag region is a RECTANGLE, and anything overlapping it needs no-drag whether
+   or not it is a child. Tony: "now the HUD window button doesn't work." */
+.hud-open,
+/* Same shape of mistake, caught by the same gate: .float-toggle is
+   position:absolute top:10 right:12 over .main-drag's 38px strip. I had assumed
+   its z-index:5 kept it above the strip and clickable — z-index orders PAINT,
+   and a drag region is a hit-testing rectangle that ignores it entirely. */
+.float-toggle, .float-toggle button { -webkit-app-region: no-drag; }
 
 /* The welcome screen has no bar of its own - nothing but space above the logo
    - so it gets a strip. It sits under .float-toggle (z-index 5) so the panel
