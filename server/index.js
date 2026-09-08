@@ -20,7 +20,7 @@ import { commandRisk } from './util.js'
 import { listFacts, addFacts, addFactManual, deleteFact, clearFacts, relevantFacts } from './memory.js'
 import { shouldReflect, reflectionPrompt, parseProposal, addSuggestion } from './skillsmith.js'
 import { normalizeStep, workPrompt, checkPrompt, readVerdict } from './loop-rules.js'
-import { normalizeNode, planLayers, suspectEdges, toMermaid, DEFAULT_CONCURRENCY } from './graph-rules.js'
+import { normalizeNode, planLayers, suspectEdges, toMermaid, draftPrompt, readDraft, DEFAULT_CONCURRENCY } from './graph-rules.js'
 import { runGraph, isRunning, liveRun, stopGraph } from './graph-run.js'
 
 const PORT = Number(process.env.RADIANT_PORT || 5834)
@@ -2363,6 +2363,57 @@ app.post('/api/graphs/:id/run', (req, res) => {
 
 app.post('/api/graphs/:id/stop', (req, res) => {
   res.json({ ok: true, stopped: stopGraph(req.params.id) })
+})
+
+// Draft a graph from a sentence.
+//
+// ⚠️ THIS DRAFTS; IT DOES NOT RUN. One cheap turn, no tools, nothing written —
+// the result lands in the editor for the user to read and change, and the graph
+// only runs when they press Run. Approval belongs between finished work and an
+// irreversible action, not in front of a proposal.
+app.post('/api/graphs/draft', async (req, res) => {
+  const goal = String(req.body?.goal || '').trim()
+  if (!goal) return res.status(400).json({ error: 'Say what you want done first.' })
+  const cfg = loadConfig()
+  const providerId = req.body?.provider || cfg.settings.defaultProvider
+  const model = req.body?.model || cfg.settings.defaultModel
+  if (!providerId || !model) return res.status(400).json({ error: 'Pick a model to draft with.' })
+  const cred = await graphCreds(providerId)
+  if (!cred) return res.status(400).json({ error: `Not signed in to ${providerId}.` })
+
+  const prompt = draftPrompt(goal, String(req.body?.detail || ''), req.body?.cwd || '')
+  const controller = new AbortController()
+  const attempt = async (extra) => {
+    let out = ''
+    await runTurn({
+      provider: cred.provider,
+      model,
+      apiKey: cred.apiKey,
+      getAccessToken: cred.getAccessToken,
+      getAccountId: cred.getAccountId,
+      session: { cwd: req.body?.cwd || os.homedir(), messages: [{ role: 'user', text: extra ? `${prompt}\n\n${extra}` : prompt }] },
+      useTools: false,
+      computerControl: false,
+      persona: '',
+      skills: [],
+      emit: ev => { if (ev.type === 'text_delta') out += ev.text },
+      requestApproval: null,
+      signal: controller.signal
+    })
+    return out
+  }
+
+  try {
+    let draft = readDraft(await attempt())
+    // ⚠️ ONE RETRY, WITH THE REASON. A draft that cannot be planned — a cycle, a
+    // step depending on nothing that exists — is not a draft. Telling the model
+    // exactly what was wrong fixes it far more often than asking again blind.
+    if (!draft.ok) draft = readDraft(await attempt(`Your previous reply could not be used: ${draft.reason}\nReply again with JSON only, and make sure no step depends on itself or forms a circle.`))
+    if (!draft.ok) return res.status(422).json({ error: draft.reason })
+    res.json({ nodes: draft.nodes, tiers: draft.tiers, assumptions: draft.assumptions })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
 })
 
 

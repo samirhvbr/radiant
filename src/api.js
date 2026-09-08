@@ -336,6 +336,9 @@ export const api = {
   graphPlan: id => json('GET', `/api/graphs/${id}/plan`),
   runGraph: id => json('POST', `/api/graphs/${id}/run`),
   stopGraph: id => json('POST', `/api/graphs/${id}/stop`),
+  // Drafts a graph from a sentence. Costs one cheap turn and runs nothing — the
+  // result goes into the editor, and the graph only runs when Run is pressed.
+  draftGraph: body => json('POST', '/api/graphs/draft', body),
 
   searchSessions: q => json('GET', `/api/sessions-search?q=${encodeURIComponent(q)}`),
   createSession: body => json('POST', '/api/sessions', body || {}),

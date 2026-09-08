@@ -148,6 +148,15 @@ export default function GraphBoard ({
   const [editingId, setEditingId] = useState(null)
   const [draft, setDraft] = useState(null)
   const [openId, setOpenId] = useState(null)
+  // ⚠️ DESCRIBE IT IS THE FRONT DOOR, NOT THE EXTRA. The node-by-node editor
+  // asks the user to do the wiring by hand — which is the one cost this whole
+  // idea removed. Tony: "The current state seems like a lot of work for the
+  // user." Building it yourself stays, for when you know exactly what you want.
+  const [how, setHow] = useState('describe')
+  const [goal, setGoal] = useState('')
+  const [drafting, setDrafting] = useState(false)
+  const [assumptions, setAssumptions] = useState([])
+  const [draftModel, setDraftModel] = useState({ model: null, provider: null })
   const [plan, setPlan] = useState(null)
   const host = useRef(null)
 
@@ -188,11 +197,35 @@ export default function GraphBoard ({
 
   const startDraft = () => {
     setDraft({ title: '', detail: '', cwd: defaultCwd || '', concurrency: 4, autoApprove: false, nodes: DIAMOND() })
-    setEditingId(null); setComposing(true)
+    setEditingId(null); setHow('describe'); setGoal(''); setAssumptions([]); setComposing(true)
+  }
+
+  const askForDraft = async () => {
+    if (!goal.trim()) return
+    setDrafting(true); setAssumptions([])
+    try {
+      const r = await api.draftGraph({
+        goal: goal.trim(),
+        cwd: draft.cwd.trim() || null,
+        provider: draftModel.provider || undefined,
+        model: draftModel.model || undefined
+      })
+      // The tier hint decides which model each step gets: broad collection runs
+      // cheap, judgement runs on whatever the user is drafting with. A fan-out
+      // that inherits the top model bills entirely at that tier.
+      const nodes = r.nodes.map(n => ({
+        ...n,
+        model: r.tiers?.[n.id] === 'smart' ? (draftModel.model || null) : null,
+        provider: r.tiers?.[n.id] === 'smart' ? (draftModel.provider || null) : null
+      }))
+      setDraft(d => ({ ...d, title: d.title.trim() || goal.trim().slice(0, 70), nodes }))
+      setAssumptions(r.assumptions || [])
+      setHow('build')     // straight into the editor, with the draft in it
+    } catch (e) { onError?.(e.message) } finally { setDrafting(false) }
   }
   const editGraph = g => {
     setDraft({ title: g.title, detail: g.detail || '', cwd: g.cwd || '', concurrency: g.concurrency || 4, autoApprove: Boolean(g.autoApprove), nodes: g.nodes.map(n => ({ ...n })) })
-    setEditingId(g.id); setComposing(true)
+    setEditingId(g.id); setHow('build'); setAssumptions([]); setComposing(true)
   }
 
   const save = async () => {
@@ -208,6 +241,24 @@ export default function GraphBoard ({
   const run = async g => { try { await api.runGraph(g.id); setOpenId(g.id); refresh() } catch (e) { onError?.(e.message) } }
   const stop = async g => { try { await api.stopGraph(g.id); refresh() } catch (e) { onError?.(e.message) } }
   const remove = async g => { try { await api.deleteGraph(g.id); if (openId === g.id) setOpenId(null); refresh() } catch (e) { onError?.(e.message) } }
+
+  // The same layering the server does, run on the draft so the composer can show
+  // what the shape bought before anything is created.
+  const draftShape = useMemo(() => {
+    const nodes = (draft?.nodes || []).filter(n => n.title.trim())
+    if (!nodes.length) return null
+    const byId = new Map(nodes.map(n => [n.id, n]))
+    const remaining = new Set(nodes.map(n => n.id))
+    const done = new Set()
+    const counts = []
+    while (remaining.size) {
+      const ready = [...remaining].filter(id => (byId.get(id).dependsOn || []).every(d => done.has(d) || !byId.has(d)))
+      if (!ready.length) return null          // a circle; the server says so on save
+      counts.push(ready.length)
+      for (const id of ready) { remaining.delete(id); done.add(id) }
+    }
+    return { stages: counts.length, counts, widest: Math.max(...counts) }
+  }, [draft])
 
   const setNode = (i, n) => setDraft(d => ({ ...d, nodes: d.nodes.map((x, j) => (j === i ? n : x)) }))
   const addNode = () => setDraft(d => ({ ...d, nodes: [...d.nodes, { ...blankNode(), id: 'new-' + Date.now() }] }))
@@ -234,6 +285,77 @@ export default function GraphBoard ({
 
       {composing && draft && (
         <div className='gb-compose'>
+          <div className='gb-how' role='group' aria-label='How to make this graph'>
+            <button type='button' className={'rx-btn rx-btn-seg' + (how === 'describe' ? ' on' : '')}
+              onClick={() => setHow('describe')}>Describe it</button>
+            <button type='button' className={'rx-btn rx-btn-seg' + (how === 'build' ? ' on' : '')}
+              onClick={() => setHow('build')}>Build it myself</button>
+          </div>
+
+          {how === 'describe' && (
+            <div className='gb-ask'>
+              <p className='lp-panel-lead'>
+                Say what you want done, in a sentence. Radiant proposes the steps and works out which of
+                them actually have to wait for each other — you read it, change anything you like, and
+                nothing runs until you press Run.
+              </p>
+              <textarea
+                className='lp-input lp-area'
+                rows={3}
+                placeholder={'e.g. Audit every route file in this repo for missing auth checks, then have something try to break the findings before writing them up'}
+                value={goal}
+                onChange={e => setGoal(e.target.value)}
+                aria-label='What you want done'
+              />
+              <label className='lp-field'>
+                <span className='lp-field-label'>Which folder should it work in?</span>
+                <PathPicker value={draft.cwd} onChange={cwd => setDraft(d => ({ ...d, cwd }))} projects={projects} label='Working folder' />
+              </label>
+              <div className='gb-ask-foot'>
+                <label className='lp-pick'>
+                  <span>Draft with</span>
+                  <ModelPicker
+                    session={draftModel}
+                    models={pickable}
+                    onPick={m => setDraftModel({ model: m.id, provider: m.provider })}
+                    onRefresh={() => onRefreshModels?.()}
+                  />
+                </label>
+                <button className='rx-btn rx-btn-go' type='button' onClick={askForDraft} disabled={drafting || !goal.trim()}>
+                  {drafting ? 'Drafting…' : 'Draft the graph'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ⚠️ SHOW THE SHAPE BEFORE IT IS CREATED, NOT AFTER. A drafted chain
+              looks exactly like a drafted graph in a list of steps — the
+              difference is whether anything runs at the same time, and that is
+              only visible if you say it. Measured on the first real draft: four
+              steps, four stages, nothing parallel. The readout is what makes
+              that obvious while it is still free to fix. */}
+          {how === 'build' && draftShape && (
+            <p className={'gb-layers' + (draftShape.widest > 1 ? '' : ' gb-suspect')}>
+              {draftShape.stages} stage{draftShape.stages === 1 ? '' : 's'} · {draftShape.counts.join(' then ')} at a time
+              {draftShape.widest > 1
+                ? ` — ${draftShape.widest} steps run together`
+                : ' — nothing runs in parallel. Right when each step truly reads the one before it; if any of them does not, untick that dependency.'}
+            </p>
+          )}
+
+          {how === 'build' && assumptions.length > 0 && (
+            /* ⚠️ WHAT IT GUESSED, SAID OUT LOUD. The alternative was interviewing
+               the user before drafting anything, which is friction in front of a
+               blank page. A draft you can react to plus a list of what it assumed
+               gets the same information with none of the waiting. */
+            <div className='gb-assumed'>
+              <span className='lp-field-label'>It assumed:</span>
+              <ul>{assumptions.map((a, i) => <li key={i}>{a}</li>)}</ul>
+              <span className='lp-field-hint'>Change anything below that is wrong. Nothing has run.</span>
+            </div>
+          )}
+
+          {how === 'build' && <>
           <input className='lp-input lp-input-lead' placeholder='What is this graph for?'
             value={draft.title} onChange={e => setDraft(d => ({ ...d, title: e.target.value }))} aria-label='Graph goal' />
           <textarea className='lp-input lp-area' rows={2} placeholder='Context every step should have (optional)'
@@ -249,7 +371,9 @@ export default function GraphBoard ({
               onChange={next => setNode(i, next)} onRemove={() => removeNode(i)} onRefreshModels={onRefreshModels} />
           ))}
 
-          <div className='gb-compose-foot'>
+          </>}
+
+          {how === 'build' && <div className='gb-compose-foot'>
             <button type='button' className='rx-btn rx-btn-sm' onClick={addNode}>+ Add step</button>
             <label className='gb-auto'>
               <input type='checkbox' checked={draft.autoApprove}
@@ -261,7 +385,7 @@ export default function GraphBoard ({
             <button className='rx-btn rx-btn-go' onClick={save} disabled={!draft.title.trim() || !draft.nodes.some(n => n.title.trim())}>
               {editingId ? 'Save changes' : 'Create graph'}
             </button>
-          </div>
+          </div>}
         </div>
       )}
 

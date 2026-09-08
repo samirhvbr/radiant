@@ -222,3 +222,85 @@ export function toMermaid (graph, run) {
   }
   return lines.join('\n')
 }
+
+// ── drafting a graph from a sentence ────────────────────────────────────────
+//
+// ⚠️ THE MANUAL BUILDER PUTS THE WIRING COST BACK ON THE USER, WHICH IS THE ONE
+// COST THIS WHOLE IDEA IS SUPPOSED TO HAVE REMOVED. What changed recently is not
+// that graphs became possible — LangGraph and friends predate the name — it is
+// that you can describe an objective and have a model write the orchestration.
+// A form with a dependency checklist per node is the old price, charged again.
+// So: describe it and get a draft; the node editor is the fallback, not the door.
+//
+// ⚠️ AND A DRAFT IS NOT A RUN. Drafting costs one cheap turn and touches nothing;
+// running spends money and writes files. The draft lands in the editor, where it
+// can be read and changed, and nothing happens until Run. That is where the last
+// yes belongs — between finished work and an irreversible action.
+
+export function draftPrompt (goal, detail, cwd) {
+  return [
+    `Design a small agent graph for this job:\n${goal}${detail ? '\n\n' + detail : ''}`,
+    cwd ? `It will run in ${cwd}.` : '',
+    `A graph is steps and the real dependencies between them.
+
+RULES, and the second one is the whole point:
+1. A step is ONE bounded job an agent could do alone.
+2. A step depends on another ONLY IF it reads what that one produced. "Summarise this file and check the weather" has NO dependency — the weather never opens the summary. Steps you do not connect run AT THE SAME TIME, which is the entire reason to draw a graph. Do not chain things out of habit.
+3. Include one "verify" step that reads the findings and tries to DISPROVE them. It must not be the same step that produced them.
+4. If a step only joins or de-duplicates what came before, make it "reduce" — that runs as code, costs nothing, and takes no time. Never spend an agent on plumbing.
+5. Usually finish with one step that merges what survived into the answer.
+6. If the same kind of work applies to MANY things — files, sources, angles, modules — write several steps that each take a slice and run at the same time, not one step that loops over all of them. One agent per route file beats one agent reading every route file.
+7. Prefer 3-7 steps. Before you answer, count how many run in the first stage: if the answer is one, you have drawn a chain, and a chain is the shape this is meant to replace. Go back and split the widest step.`,
+    `Reply with JSON only, no prose and no code fence:
+{
+  "nodes": [
+    {"id": "a", "title": "short name", "kind": "agent|verify|reduce", "prompt": "what this step should do", "dependsOn": ["id", ...], "tier": "cheap|smart"}
+  ],
+  "assumptions": ["things you had to guess, one short line each"]
+}
+"tier" is a hint: "cheap" for broad, repetitive collection; "smart" for the steps that carry judgement, usually the verify and the final merge.`
+  ].filter(Boolean).join('\n\n')
+}
+
+/**
+ * Read a drafted graph. Charitable about the shape, strict about the contract:
+ * a draft that cannot be planned is not a draft, it is an error to retry.
+ */
+export function readDraft (text) {
+  const s = String(text || '').trim()
+  const m = s.match(/\{[\s\S]*\}/)
+  if (!m) return { ok: false, reason: 'The model replied with prose instead of a graph.' }
+  let obj
+  try { obj = JSON.parse(m[0]) } catch (e) { return { ok: false, reason: `That draft was not readable JSON: ${e.message}` } }
+  const raw = Array.isArray(obj.nodes) ? obj.nodes : []
+  if (!raw.length) return { ok: false, reason: 'The draft had no steps in it.' }
+
+  // ⚠️ IDS ARE THE MODEL'S, AND EDGES POINT AT THEM. Renaming them before the
+  // dependencies are resolved silently disconnects the graph — every edge would
+  // point at an id that no longer exists, planLayers would refuse it, and the
+  // user would see "depends on something that is not in this graph" for a draft
+  // that was fine.
+  const known = new Set(raw.map(n => String(n.id || '')).filter(Boolean))
+  const nodes = raw.map(n => normalizeNode({
+    id: String(n.id || ''),
+    title: String(n.title || '').slice(0, 80),
+    kind: n.kind,
+    prompt: String(n.prompt || ''),
+    // Drop edges to steps that are not in the draft rather than failing the
+    // whole thing: a model that invents one id has still drawn a usable graph.
+    dependsOn: (Array.isArray(n.dependsOn) ? n.dependsOn : []).map(String).filter(d => known.has(d) && d !== String(n.id)),
+    reduceOp: n.kind === 'reduce' ? 'dedupe' : undefined,
+    useTools: n.kind !== 'reduce'
+  })).filter(n => n.title)
+
+  if (!nodes.length) return { ok: false, reason: 'None of the drafted steps had a name.' }
+  const { error } = planLayers(nodes)
+  if (error) return { ok: false, reason: error, nodes }
+  const tiers = Object.fromEntries(raw.map(n => [String(n.id), n.tier === 'smart' ? 'smart' : 'cheap']))
+  return {
+    ok: true,
+    nodes,
+    tiers,
+    assumptions: (Array.isArray(obj.assumptions) ? obj.assumptions : []).map(a => String(a).slice(0, 200)).slice(0, 6)
+  }
+}

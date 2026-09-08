@@ -14,7 +14,8 @@ import { join } from 'node:path'
 import http from 'node:http'
 
 const {
-  planLayers, suspectEdges, normalizeNode, nodePrompt, readOutput, runReduce, toMermaid, inputBlock
+  planLayers, suspectEdges, normalizeNode, nodePrompt, readOutput, runReduce, toMermaid, inputBlock,
+  draftPrompt, readDraft
 } = await import('../server/graph-rules.js')
 
 let pass = 0, fail = 0
@@ -139,6 +140,62 @@ const N = o => normalizeNode(o)
   ok('a skeptic is a different shape from a worker', m.includes('{{"'))
   const withRun = toMermaid(g, { nodes: { a: { state: 'done' }, b: { state: 'running' } } })
   ok('a run marks what finished and what is going', withRun.includes('✓ A') && withRun.includes('● B'))
+}
+
+// ── drafting a graph from a sentence ────────────────────────────────────────
+// ⚠️ THE MANUAL BUILDER CHARGES THE USER THE WIRING COST — the one cost this
+// idea removed. So the draft path has to produce something USABLE, not just
+// something parseable: a draft that cannot be planned is an error to retry, not
+// a graph to show.
+{
+  const p = draftPrompt('Audit the routes for missing auth', '', '/repo')
+  ok('the draft prompt teaches the rule that matters',
+     /ONLY IF it reads what that one produced/i.test(p) || /only if it reads/i.test(p))
+  ok('it warns against chaining out of habit', /out of habit/i.test(p))
+  ok('it asks for a skeptic that is not the author', /DISPROVE/i.test(p) && /must not be the same step/i.test(p))
+  ok('it says plumbing is code, not an agent', /Never spend an agent on plumbing/i.test(p))
+  ok('and it names the folder when there is one', p.includes('/repo'))
+
+  const good = JSON.stringify({
+    nodes: [
+      { id: 'a', title: 'Angle A', kind: 'agent', prompt: 'x', dependsOn: [], tier: 'cheap' },
+      { id: 'b', title: 'Angle B', kind: 'agent', prompt: 'y', dependsOn: [], tier: 'cheap' },
+      { id: 'c', title: 'Check', kind: 'verify', dependsOn: ['a', 'b'], tier: 'smart' },
+      { id: 'd', title: 'Write up', kind: 'agent', dependsOn: ['c'], tier: 'smart' }
+    ],
+    assumptions: ['assumed the repo is JavaScript']
+  })
+  const r = readDraft(good)
+  ok('a well-formed draft is accepted', r.ok, r.reason)
+  ok('and it plans as a real fan-out', planLayers(r.nodes).layers[0].length === 2)
+  ok('tier hints survive, so breadth can run cheap', r.tiers.a === 'cheap' && r.tiers.c === 'smart')
+  ok('assumptions come back to be shown', r.assumptions[0].includes('JavaScript'))
+  ok('a code fence around it is tolerated', readDraft('```json\n' + good + '\n```').ok)
+  ok('prose instead of a graph is refused', !readDraft('Here is a nice plan for you!').ok)
+  ok('an empty node list is refused', !readDraft('{"nodes":[]}').ok)
+
+  // ⚠️ IDS ARE THE MODEL'S AND EDGES POINT AT THEM. Renaming before resolving the
+  // dependencies silently disconnects every edge, and the user sees "depends on
+  // something that is not in this graph" for a draft that was fine.
+  const kept = readDraft(good)
+  ok('the ids the edges point at are preserved', kept.nodes.find(n => n.title === 'Check').dependsOn.sort().join() === 'a,b')
+
+  // A model that invents one id has still drawn a usable graph.
+  const ghost = readDraft(JSON.stringify({ nodes: [
+    { id: 'a', title: 'One', kind: 'agent', dependsOn: [] },
+    { id: 'b', title: 'Two', kind: 'agent', dependsOn: ['a', 'nope'] }] }))
+  ok('an edge to a step that does not exist is dropped, not fatal',
+     ghost.ok && ghost.nodes[1].dependsOn.join() === 'a', ghost.reason)
+  ok('a step depending on itself is dropped',
+     readDraft(JSON.stringify({ nodes: [{ id: 'a', title: 'One', kind: 'agent', dependsOn: ['a'] }] })).nodes[0].dependsOn.length === 0)
+
+  // ⚠️ A CIRCLE IS AN ERROR TO RETRY, NOT A GRAPH TO SHOW. The route feeds this
+  // reason back to the model, which fixes it far more often than asking again blind.
+  const cyc = readDraft(JSON.stringify({ nodes: [
+    { id: 'a', title: 'A', kind: 'agent', dependsOn: ['b'] },
+    { id: 'b', title: 'B', kind: 'agent', dependsOn: ['a'] }] }))
+  ok('a circular draft is refused', !cyc.ok && /circle/i.test(cyc.reason))
+  ok('and the reason is specific enough to hand back to the model', (cyc.reason || '').length > 20)
 }
 
 console.log(results.join('\n'))

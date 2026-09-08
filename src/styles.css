@@ -3165,3 +3165,16 @@ button.hf-head:hover { background: var(--bg-hover); }
 .send-btn.stop.is-stopping { opacity: .55; cursor: default; animation: stop-pulse 1s ease-in-out infinite; }
 @keyframes stop-pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .send-btn.stop.is-stopping { animation: none; } }
+
+/* Describe it / Build it myself. The first is the front door: the node editor
+   asks the user to do the wiring by hand, which is the cost this whole idea is
+   supposed to have removed. */
+.gb-how { display: flex; gap: 6px; }
+.gb-ask { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 14px; background: var(--bg-panel); }
+.gb-ask-foot { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.gb-ask-foot .rx-btn-go { margin-left: auto; }
+/* What it guessed, said out loud — instead of interviewing the user in front of
+   a blank page. */
+.gb-assumed { padding: 10px 12px; border-radius: 10px; background: var(--bg-input); display: flex; flex-direction: column; gap: 4px; }
+.gb-assumed ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+.gb-assumed li { font-size: 11.5px; color: var(--text-muted); line-height: 1.45; }
