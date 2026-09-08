@@ -7,6 +7,15 @@ import './styles.css'
 import '@xterm/xterm/css/xterm.css'
 import 'highlight.js/styles/atom-one-dark.css'
 
+// ⚠️ SET BEFORE THE FIRST PAINT, AND ONLY WHEN WE ARE SURE. The window keeps a
+// real title bar everywhere except macOS, and styles.css needs to know so it
+// stops reserving 38px for traffic lights and stops arming drag regions for a
+// bar the page does not own. Marked only when radiantNative says so: in a plain
+// browser there is nothing to be sure about, so nothing changes there.
+if (window.radiantNative?.platform && window.radiantNative.platform !== 'darwin') {
+  document.documentElement.dataset.windowChrome = 'native'
+}
+
 const hash = window.location.hash.replace(/^#/, '')
 const [route, tab] = hash.split('/')
 createRoot(document.getElementById('root')).render(
