@@ -96,6 +96,12 @@
       "target": [
         "AppImage"
       ],
+      "extraResources": [
+        {
+          "from": "gnome/radiant-control.cjs",
+          "to": "gnome/radiant-control.cjs"
+        }
+      ],
       "category": "Development",
       "icon": "build/icon.png",
       "maintainer": "Templeton Technologies",
