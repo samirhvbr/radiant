@@ -7,8 +7,11 @@
  * bolding it, answering twice, answering not at all — is a case here.
 
  */
-const { readVerdict, workPrompt, checkPrompt, normalizeStep, DEFAULT_ATTEMPTS, MAX_ATTEMPTS } =
-  await import('../server/loop-rules.js')
+const {
+  readVerdict, workPrompt, checkPrompt, normalizeStep, DEFAULT_ATTEMPTS, MAX_ATTEMPTS,
+  readCommandVerdict, EVIDENCE_CHARS, normalizeGoal, hasGoalCheck, goalPrompt, resetSteps,
+  normalizeSchedule, nextRunAt, isDue, afterRun, MAX_PASSES, MAX_EVERY_MINUTES, SCHEDULE_GIVE_UP
+} = await import('../server/loop-rules.js')
 
 let pass = 0, fail = 0
 const results = []
@@ -81,6 +84,130 @@ const kept = normalizeStep({ title: 'renamed' }, { id: 'step-abc', state: 'passe
 ok('editing a step keeps its id', kept.id === 'step-abc')
 ok('editing a step keeps what the run already did', kept.state === 'passed' && kept.attempts === 2)
 ok('and takes the new title', kept.title === 'renamed')
+
+// ── the deterministic check ─────────────────────────────────────────────────
+//
+// ⚠️ THE THREE OUTCOMES WEAR THE SAME `err` OBJECT AND MEAN DIFFERENT THINGS,
+// which is exactly the shape of bug that ships. A command that ran and said no
+// is the ordinary case; one that never started is the user's typo; one that hung
+// is neither. Telling the user the wrong one sends them to debug the wrong file.
+ok('exit 0 passes', readCommandVerdict({ code: 0, stdout: 'ok' }).pass === true)
+ok('a non-zero exit fails', readCommandVerdict({ code: 1, stdout: '1 test failed' }).pass === false)
+ok('and the output travels as the evidence',
+   readCommandVerdict({ code: 1, stdout: '1 test failed' }).reason.includes('1 test failed'))
+ok('a command that ran counts as having run',
+   readCommandVerdict({ code: 1, stdout: 'nope' }).ran === true)
+
+// ⚠️ COULD-NOT-RUN IS NOT DID-NOT-PASS. Both fail the step, and only one of them
+// means "your check is broken" — the sentence has to say which.
+const broken = readCommandVerdict({ spawnError: 'spawn bash ENOENT' })
+ok('a command that never started is not a failing check', broken.ran === false)
+ok('and says the command itself is the problem', broken.reason.includes('could not run'))
+ok('a spawn failure never reads as a pass', broken.pass === false)
+
+const hung = readCommandVerdict({ timedOut: true, timeoutMs: 120000, stdout: 'building…' })
+ok('a hung command fails', hung.pass === false)
+ok('and says how long it waited', hung.reason.includes('120s'))
+
+// ⚠️ THE TAIL, NOT THE HEAD. A test runner prints its banner first and its
+// summary last. Truncating from the front hands the retry the copyright notice
+// and drops the one line naming what broke — the whole point of the evidence.
+const noisy = 'BANNER '.repeat(400) + 'FAILED: test_auth_redirect expected 302 got 200'
+const trimmed = readCommandVerdict({ code: 1, stdout: noisy })
+ok('a huge output is trimmed', trimmed.reason.length < noisy.length)
+ok('and it is the END that survives', trimmed.reason.includes('test_auth_redirect expected 302 got 200'))
+ok('the trim is bounded', trimmed.reason.length < EVIDENCE_CHARS + 200)
+
+// ⚠️ NOTHING AT ALL IS STILL A PASS IF THE COMMAND SAID SO. A silent exit 0 is
+// what `test -f build/out.js` looks like, and treating quiet as suspicious would
+// break the simplest useful check there is.
+ok('a silent exit 0 still passes', readCommandVerdict({ code: 0 }).pass === true)
+// But a missing code with no error is not evidence of anything.
+ok('an unknown outcome does not pass', readCommandVerdict({}).pass === false)
+
+// ── the scope line on a return ──────────────────────────────────────────────
+//
+// ⚠️ WITHOUT IT A RETURNED STEP GROWS. The agent opens the file, notices two
+// adjacent problems, fixes those too — and the steps it wanders into already
+// passed their own checks, so one known failure becomes several unverified ones.
+const gLoop = { title: 'Ship it', detail: '', currentStep: 1, pass: 1, maxPasses: 1, steps: [{}, {}] }
+const scoped = workPrompt(gLoop, normalizeStep({ title: 'Write the parser', check: 'tests pass', lastFail: 'no test file' , maxAttempts: 3 }, { lastFail: 'no test file' }))
+ok('a retry names what failed', scoped.includes('WHAT FAILED: Write the parser'))
+ok('a retry carries the reason', scoped.includes('no test file'))
+ok('a retry is scoped', scoped.includes('SCOPE:'))
+ok('and says not to redo the other steps', /do not redo them/i.test(scoped))
+// A first attempt has nothing to be scoped about, and saying so anyway would
+// read as an accusation before any work happened.
+const attempt1 = workPrompt(gLoop, normalizeStep({ title: 'Write the parser', check: 'tests pass' }))
+ok('a first attempt carries no scope line', !attempt1.includes('SCOPE:'))
+
+// The command is stated in the work prompt, so the agent knows what it is being
+// held to rather than guessing from the sentence next to it.
+const withCmd = workPrompt(gLoop, normalizeStep({ title: 'Build', checkCommand: 'npm test' }))
+ok('the work prompt names the check command', withCmd.includes('npm test'))
+ok('and says it has to exit 0', withCmd.includes('exit 0'))
+
+// ── goals ───────────────────────────────────────────────────────────────────
+ok('a step-only loop has no goal check', hasGoalCheck({ goalCheck: '', goalCommand: '' }) === false)
+ok('a command alone is a goal check', hasGoalCheck({ goalCommand: 'npm run e2e' }) === true)
+ok('passes default to one', normalizeGoal({}).maxPasses === 1)
+ok('passes are capped', normalizeGoal({ maxPasses: 500 }).maxPasses === MAX_PASSES)
+ok('zero passes is not allowed', normalizeGoal({ maxPasses: 0 }).maxPasses === 1)
+ok('the goal prompt asks for a verdict', goalPrompt({ title: 'Ship', goalCheck: 'it builds' }).includes('VERDICT: PASS'))
+// ⚠️ THE GOAL JUDGE MUST NOT RE-LITIGATE THE STEPS. Every step already passed;
+// asking again gets a report on work that was never the question.
+ok('and says the steps are not the question',
+   /already passed/i.test(goalPrompt({ title: 'Ship', goalCheck: 'it builds' })))
+
+// A later pass has to know it is one, or it repeats pass one exactly — the one
+// thing guaranteed not to work.
+const p2 = workPrompt({ ...gLoop, pass: 2, maxPasses: 3, lastGoalFail: 'no CSV button anywhere' }, normalizeStep({ title: 'Write it' }))
+ok('a later pass says which pass it is', p2.includes('pass 2 of 3'))
+ok('and carries what the goal check said', p2.includes('no CSV button anywhere'))
+
+// resetSteps wipes the run and keeps the configuration. Losing the check on a
+// second pass would silently make the loop weaker each time round.
+const [r0] = resetSteps([normalizeStep({ title: 'a', check: 'c', checkCommand: 'npm test', maxAttempts: 5 }, { state: 'passed', attempts: 4, lastFail: 'x' })])
+ok('a new pass clears what the last one did', r0.state === 'pending' && r0.attempts === 0 && r0.lastFail === null)
+ok('and keeps the check', r0.check === 'c' && r0.checkCommand === 'npm test')
+ok('and keeps the attempt cap', r0.maxAttempts === 5)
+
+// ── schedules ───────────────────────────────────────────────────────────────
+ok('no schedule is the default', normalizeSchedule(null) === null)
+ok('zero minutes is not a schedule', normalizeSchedule({ everyMinutes: 0 }) === null)
+ok('garbage is not a schedule', normalizeSchedule({ everyMinutes: 'often' }) === null)
+ok('an interval is capped', normalizeSchedule({ everyMinutes: 99999999 }).everyMinutes === MAX_EVERY_MINUTES)
+
+const T0 = '2026-09-08T12:00:00.000Z'
+const hourly = { schedule: { everyMinutes: 60 }, createdAt: T0, scheduledAt: T0, lastRunAt: null, state: 'idle' }
+ok('the first run is one interval away', nextRunAt(hourly) === '2026-09-08T13:00:00.000Z')
+ok('and it is not due before then', isDue(hourly, Date.parse('2026-09-08T12:59:00Z')) === false)
+ok('and is due after', isDue(hourly, Date.parse('2026-09-08T13:00:01Z')) === true)
+
+// ⚠️ MEASURED FROM THE LAST RUN. Counting from createdAt means putting "every
+// hour" on a loop written last week makes it due the instant you press Save —
+// the user asked for an hour and got a run immediately, which reads as a bug.
+const aged = { ...hourly, createdAt: '2026-01-01T00:00:00.000Z', scheduledAt: T0 }
+ok('adding a schedule to an old loop does not fire it at once',
+   isDue(aged, Date.parse('2026-09-08T12:05:00Z')) === false)
+ok('a loop already running is never due',
+   isDue({ ...hourly, state: 'running', lastRunAt: '2026-01-01T00:00:00.000Z' }, Date.now()) === false)
+ok('a loop with no schedule is never due', isDue({ ...hourly, schedule: null }, Date.now()) === false)
+
+// ⚠️ A FAILING LOOP ON A TIMER IS AN UNBOUNDED BILL — the same argument as the
+// per-step attempt cap, one layer up and with nobody watching.
+let acc = { ...hourly, consecutiveFailures: 0 }
+acc = { ...acc, ...afterRun(acc, 'failed') }
+ok('one failure does not switch the schedule off', acc.schedule !== null && acc.consecutiveFailures === 1)
+acc = { ...acc, ...afterRun(acc, 'failed') }
+ok(`${SCHEDULE_GIVE_UP} in a row does`, acc.schedule === null)
+ok('and says why', typeof acc.scheduleOffReason === 'string' && acc.scheduleOffReason.length > 10)
+// A run that finishes clears the streak, so an occasional failure never
+// accumulates its way to switching a healthy loop off.
+let good = { ...hourly, consecutiveFailures: 1 }
+good = { ...good, ...afterRun(good, 'done') }
+ok('a finished run clears the streak', good.consecutiveFailures === 0 && good.schedule !== null)
+ok('and stamps when it ran', typeof good.lastRunAt === 'string')
 
 console.log(results.join('\n'))
 console.log(`\n${pass}/${pass + fail} passed  ·  a step is done when a check says so`)

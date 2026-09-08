@@ -386,9 +386,15 @@ function DesktopApp () {
     setLoopRun(null)
     if (r.action === 'failed') {
       const bad = (r.loop?.steps || []).find(x => x.state === 'failed')
+      // ⚠️ A GOAL THAT RAN OUT OF PASSES HAS NO FAILED STEP TO POINT AT — every
+      // step passed its own check, which is exactly the situation a goal check
+      // exists to catch. Falling through to "stopped without finishing" would
+      // hide the one sentence that says what is actually still wrong.
       setError(bad
         ? `"${r.loop.title}" stopped at "${bad.title}" after ${bad.attempts} attempts. The check said: ${bad.lastFail}`
-        : `"${r.loop?.title || 'That loop'}" stopped without finishing.`)
+        : r.loop?.lastGoalFail
+          ? `"${r.loop.title}" ran every step ${r.loop.pass} time${r.loop.pass === 1 ? '' : 's'} and still did not meet its goal: ${r.loop.lastGoalFail}`
+          : `"${r.loop?.title || 'That loop'}" stopped without finishing.`)
     }
   }
 
@@ -404,6 +410,48 @@ function DesktopApp () {
     setLoopRun(null)
     try { await api.stopLoop(loop.id) } catch (e) { setError(e.message) }
   }
+
+  /**
+   * The scheduler: the only thing in Radiant that starts work nobody asked for
+   * in this minute.
+   *
+   * ⚠️ IT LIVES HERE BECAUSE THE CLIENT IS THE RUN ENGINE. The server never runs
+   * a turn — it answers "here is the next turn" — so a timer in the server could
+   * mark a loop due and nothing would happen. That is the trade the whole loop
+   * layer is built on: approvals, steering, tools and a transcript you can watch,
+   * paid for with "only while Radiant is open". The Loops view says so next to
+   * the control rather than leaving someone to discover it.
+   *
+   * ⚠️ AND ONE AT A TIME, NEVER OVER SOMETHING RUNNING. Due-ness is a function of
+   * the clock, so every tick would start the same loop again while the first was
+   * still going. Both guards are refs: `busyRef` reads the render state without
+   * the tick capturing a stale copy of it, and loopTurnRef is the turn already
+   * dispatched.
+   */
+  const busyRef = useRef(false)
+  useEffect(() => {
+    busyRef.current = Boolean(live?.streaming || pendingPrompt || loopRun)
+  }, [live?.streaming, pendingPrompt, loopRun])
+
+  // The tick calls through a ref so it always runs the current closure — pumpLoop
+  // reaches openSession, and a version of it captured at mount would open the
+  // wrong thing months into a session.
+  const runLoopRef = useRef(null)
+  useEffect(() => { runLoopRef.current = runLoop })
+
+  useEffect(() => {
+    const tick = async () => {
+      if (busyRef.current || loopTurnRef.current) return
+      let due = null
+      try { due = (await api.listLoops()).find(l => l.due) } catch { return }
+      // Check again: the fetch above is a round trip, and a loop may have started
+      // during it.
+      if (!due || busyRef.current || loopTurnRef.current) return
+      runLoopRef.current?.(due)
+    }
+    const t = setInterval(tick, 30_000)
+    return () => clearInterval(t)
+  }, [])
 
   const send = async content => {
     if (!session || live?.streaming) return

@@ -3194,6 +3194,22 @@ button, a, input, select, textarea, label, summary,
 .lp-review-who { color: var(--text-faint); }
 .lp-review-check { color: var(--text-muted); }
 .lp-review-nocheck { color: var(--text-faint); font-style: italic; }
+.lp-review-goalcheck {
+  margin: 10px 0 0; font-size: 11.5px; color: var(--text-muted);
+  line-height: 1.55; max-width: 62ch;
+}
+
+/* A check command is a command, so it is typed in the font commands are read in
+   — the shape of `npm test` is half of how you check you typed it right. */
+.lp-cmd-input { font-family: var(--font-mono); font-size: 12px; }
+/* The destructive-command hint sits inside a field, under the box it is about,
+   rather than floating at the foot of the form where it reads as general advice. */
+.lp-warn-inline { margin-top: 1px; }
+.lp-every { display: flex; gap: 6px; flex-wrap: wrap; }
+/* A second heading inside one panel needs air above it or the two questions read
+   as one. */
+.lp-panel-title-2 { margin-top: 6px; }
+.lp-card-every { color: var(--text-muted); }
 
 
 /* Stop was pressed and the turn has not closed yet — an in-flight tool still has
