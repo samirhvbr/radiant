@@ -28,7 +28,12 @@ const MAX_ROUNDS = 200
 // re-sent conversation is a bill, and a round count never measured the bill
 // anyway. One stuck chat cost 25.7 million input tokens across 12 turns.
 // Tokens are what runs out; tokens are what is counted.
-const MAX_TURN_TOKENS = Number(process.env.RADIANT_MAX_TURN_TOKENS || 2_000_000)
+// ⚠️ AND 2M WAS ALSO TOO LOW, FOR THE SAME REASON THE ROUND CAP WAS. A long
+// chat re-sends its whole history every round: Tony's was 135k tokens per
+// request, so 2M is fifteen rounds — it would have cut real work off all over
+// again, just with a different message. A backstop belongs far out of the way of
+// ordinary work; this one is for a turn that has genuinely run away.
+const MAX_TURN_TOKENS = Number(process.env.RADIANT_MAX_TURN_TOKENS || 12_000_000)
 
 // Identical consecutive calls. Nudged at 3, 5 and 8 — and if it is STILL making
 // the same call after that, it is not going to stop on its own.
@@ -214,6 +219,44 @@ async function * sseEvents (response) {
       try { yield JSON.parse(data) } catch { /* partial or keepalive */ }
     }
   }
+}
+
+
+// ⚠️ A TOOL RESULT IS NEEDED FOR THE NEXT ROUND OR TWO, NOT FOREVER. Measured on
+// a real chat of Tony's: 540,000 characters, of which 98% were tool results and
+// 1,739 characters were things he actually typed. fetch_url alone was half of
+// it — five raw GitHub API responses of 43k, 33k, 33k, 33k and 22k characters,
+// kept whole and re-sent on EVERY round. 135k tokens a request, 30 rounds a
+// turn, 29.8M tokens over the chat. "how can this chat be so long. i barely did
+// anything."
+//
+// So old results are folded down on the way OUT to the model. Storage is
+// untouched and the transcript still shows everything — this changes what the
+// request carries, not what happened. Recent results stay whole, because that
+// is the window where the agent is still working with them.
+const KEEP_WHOLE = 6          // the last N messages keep their results verbatim
+const FOLD_TO = 600           // how much of an older result survives
+
+export function foldOldToolResults (messages) {
+  const cut = messages.length - KEEP_WHOLE
+  if (cut <= 0) return messages
+  let folded = 0
+  const out = messages.map((m, i) => {
+    if (i >= cut || !Array.isArray(m.parts)) return m
+    let touched = false
+    const parts = m.parts.map(p => {
+      if (p.type !== 'tool' || typeof p.result !== 'string' || p.result.length <= FOLD_TO) return p
+      touched = true
+      folded += p.result.length - FOLD_TO
+      return {
+        ...p,
+        result: p.result.slice(0, FOLD_TO) +
+          `\n\n[… ${p.result.length - FOLD_TO} more characters from this earlier ${p.name} were trimmed to keep the conversation small. Run it again if you need the rest.]`
+      }
+    })
+    return touched ? { ...m, parts } : m
+  })
+  return folded ? out : messages
 }
 
 // ---------- single API round, streaming; returns {parts, stopOnTools} ----------
@@ -640,6 +683,14 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
   // per-session stats (folded into session.stats)
   const stats = session.stats || { turns: 0, inTokens: 0, outTokens: 0, llmMs: 0, toolMs: 0 }
   stats.turns += 1
+  // ⚠️ THIS COUNTER IS THE SESSION'S WHOLE LIFE, NOT THIS TURN'S. I added a
+  // "per turn" ceiling and compared it against the running total, so a chat that
+  // had ever spent more than the limit halted INSTANTLY on every turn after —
+  // zero tool calls, no work, and "keep going" could never do anything. Tony's
+  // chat had 29.8M tokens behind it against a 2M limit: permanently bricked, and
+  // strictly worse than the round cap it replaced. Take the mark at the start
+  // and measure the difference.
+  const tokensBefore = (stats.inTokens || 0) + (stats.outTokens || 0)
   const emitS = ev => { if (ev.type === 'usage') { stats.inTokens += ev.input || 0; stats.outTokens += ev.output || 0 } emit(ev) }
   const finishStats = () => { session.stats = stats; emit({ type: 'stats', stats }) }
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -653,12 +704,12 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
     // work and belongs in the transcript.
     if (signal?.aborted) { finishStats(); emit({ type: 'stopped' }); return }
     // The economic backstop. A round count never measured cost; this does.
-    if (stats.inTokens + stats.outTokens > MAX_TURN_TOKENS) {
+    if ((stats.inTokens + stats.outTokens) - tokensBefore > MAX_TURN_TOKENS) {
       finishStats()
       emit({
         type: 'halt',
         reason: 'budget',
-        text: `This turn has used ${Math.round((stats.inTokens + stats.outTokens) / 1e6 * 10) / 10}M tokens and was stopped before it spent more. Everything above is saved; Continue starts a fresh turn from here, which also costs less because the conversation gets summarized.`
+        text: `This turn has used ${Math.round(((stats.inTokens + stats.outTokens) - tokensBefore) / 1e6 * 10) / 10}M tokens and was stopped before it spent more. Everything above is saved; Continue starts a fresh turn from here, which also costs less because the conversation gets summarized.`
       })
       emit({ type: 'done' })
       return
@@ -680,7 +731,7 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
     let result
     const roundStart = Date.now()
     try {
-      const reqMsgs = groupSpeakerId ? groupFlatten(session.messages, groupSpeakerId, groupNames || {}) : session.messages
+      const reqMsgs = foldOldToolResults(groupSpeakerId ? groupFlatten(session.messages, groupSpeakerId, groupNames || {}) : session.messages)
       result = provider.type === 'anthropic'
         ? await anthropicRound({ ...args, messages: toAnthropic(reqMsgs) })
         : useChatgpt

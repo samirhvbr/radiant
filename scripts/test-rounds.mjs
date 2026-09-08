@@ -16,14 +16,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import http from 'node:http'
 
-const { runTurn } = await import('../server/providers.js')
+const { runTurn, foldOldToolResults } = await import('../server/providers.js')
 let pass = 0, fail = 0
 const results = []
 const ok = (n, c, extra = '') => { c ? pass++ : (fail++, results.push(`  FAIL ${n}${extra ? ' — ' + extra : ''}`)) }
 const dir = mkdtempSync(join(tmpdir(), 'rx-rounds-'))
 
 /** A stub model. `plan(i)` returns the tool calls for round i, or null to stop. */
-async function drive (plan) {
+async function drive (plan, session) {
   let round = 0
   const server = http.createServer(async (req, res) => {
     let body = ''; for await (const c of req) body += c
@@ -42,7 +42,7 @@ async function drive (plan) {
   await runTurn({
     provider: { id: 'stub', type: 'openai', baseUrl: `http://127.0.0.1:${server.address().port}` },
     model: 'stub', apiKey: 'x',
-    session: { cwd: dir, messages: [{ role: 'user', text: 'go' }] },
+    session: session || { cwd: dir, messages: [{ role: 'user', text: 'go' }] },
     useTools: true, computerControl: false, skills: [], persona: '',
     emit: ev => {
       if (ev.type === 'tool_start') seen.tools++
@@ -85,6 +85,50 @@ async function drive (plan) {
   ok('an agent that never repeats is still stopped eventually', Boolean(r.halt), 'ran forever')
   ok('by the round backstop', r.halt?.reason === 'rounds', r.halt?.reason)
   ok('at 200, not 30', r.rounds > 100, `${r.rounds} rounds`)
+}
+
+// ── a long-lived chat must still be able to run a turn ──────────────────────
+// ⚠️ THE BUDGET COUNTER IS THE SESSION'S WHOLE LIFE, NOT THIS TURN'S. Shipped a
+// "per turn" ceiling compared against the running total, so a chat that had ever
+// spent more than the limit halted INSTANTLY on every turn after — zero tool
+// calls, no work done, and "keep going" could never do anything. Tony's chat had
+// 29.8M tokens behind it against a 2M limit: permanently bricked, and strictly
+// worse than the round cap it replaced.
+{
+  const heavy = {
+    cwd: dir,
+    messages: [{ role: 'user', text: 'go' }],
+    // Ten times the ceiling, already spent, before this turn starts.
+    stats: { turns: 40, inTokens: 20_000_000, outTokens: 200_000, llmMs: 0, toolMs: 0 }
+  }
+  const r = await drive(i => (i < 3 ? [{ name: 'read_file', args: { path: join(dir, 'x' + i + '.txt') } }] : null), heavy)
+  ok('a chat with 20M tokens of history can still run a turn', r.done && !r.halt,
+     r.halt ? `halted immediately: ${r.halt.reason}` : '')
+  ok('and the work in it actually happens', r.tools === 3, `${r.tools} tool calls`)
+}
+
+// ── old tool results do not ride along forever ──────────────────────────────
+// ⚠️ 98% OF A REAL CHAT WAS TOOL RESULTS. 540,000 characters, of which 1,739
+// were things Tony typed; fetch_url alone was half, as five raw API responses
+// kept whole and re-sent every round. 135k tokens a request x 30 rounds a turn.
+{
+  const big = 'y'.repeat(40_000)
+  const msgs = Array.from({ length: 12 }, () => ({ role: 'assistant', parts: [{ type: 'tool', name: 'fetch_url', result: big }] }))
+  const folded = foldOldToolResults(msgs)
+  const before = JSON.stringify(msgs).length, after = JSON.stringify(folded).length
+  ok('an old heavy result is folded down', after < before / 1.5, `${before} -> ${after}`)
+  // ⚠️ THE RECENT ONES MUST SURVIVE WHOLE. That is the window the agent is still
+  // working in; trimming there would make it re-run what it just did.
+  ok('the last six messages keep their results in full',
+     folded.slice(-6).every(m => m.parts[0].result.length === 40_000))
+  ok('and the trimmed ones say so, naming the tool',
+     /trimmed/.test(folded[0].parts[0].result) && /fetch_url/.test(folded[0].parts[0].result))
+  // Nothing is destroyed — this shapes the REQUEST, not the transcript.
+  ok('the original messages are untouched', msgs[0].parts[0].result.length === 40_000)
+  ok('a short chat is returned exactly as it was',
+     foldOldToolResults(msgs.slice(0, 3)) === msgs.slice(0, 3) || JSON.stringify(foldOldToolResults(msgs.slice(0, 3))) === JSON.stringify(msgs.slice(0, 3)))
+  ok('a small result is left alone',
+     foldOldToolResults(Array.from({ length: 12 }, () => ({ role: 'assistant', parts: [{ type: 'tool', name: 'read_file', result: 'tiny' }] })))[0].parts[0].result === 'tiny')
 }
 
 console.log(results.join('\n'))
