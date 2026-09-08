@@ -28,7 +28,7 @@ times a day, so "every sync" is not a figure of speech here.
 
 | What | Why it was safe |
 |---|---|
-| [`../version.md`](../version.md) | The fork had **no version of its own at all**. Added at `0.1.0` — our history begins where our changes begin, not at the upstream's `0.7.3` (ADR-023 §1) |
+| [`../version.md`](../version.md) | The fork had **no version of its own at all**. Added at `0.1.0` — our history begins where our changes begin, not at the upstream's number of the day (ADR-023 §1) |
 | `upstream` remote | Mandatory under ADR-023 §7. The only mechanical record of provenance |
 | [`../.continue/`](../.continue/) | The queue. Purely additive, and not ignored by the upstream's `.gitignore` |
 | `docs/repodocs.md` (this file) | The record of the divergences below |
@@ -53,7 +53,7 @@ because the skeleton has one with the same name.**
 |---|---|---|
 | `LICENSE` (MIT, `Copyright (c) 2026 Samir Hanna Verza`) | **`LICENSE` — MIT, `Copyright (c) 2026 Templeton Technologies`**, the upstream's | Same license, **different copyright holder**. Overwriting it would put our name on somebody else's copyright — the conformance check `diff LICENSE repodocs/LICENSE` will never pass here, and must not. The one-line difference is exactly the line that matters |
 | `NOTICE` | Nothing — the upstream ships none | A `NOTICE` we authored would be **our** claim about **their** dependency tree, maintained by us and drifting from a `package-lock.json` we do not control. Their MIT terms already carry the attribution they require |
-| `version.md` as the only version | `package.json` still reads `0.7.3` | That is the **upstream's own version field**. Editing it conflicts on every sync — the one thing both self-versioning forks in the fleet got right from the start (ADR-023 §3) |
+| `version.md` as the only version | `package.json` carries the upstream's number, whatever it currently is | That is the **upstream's own version field**. Editing it conflicts on every sync — the one thing both self-versioning forks in the fleet got right from the start (ADR-023 §3) |
 | `CHANGELOG.md`, each `##` a commit subject | No changelog file; our record lives inside [`../version.md`](../version.md) | The upstream keeps no changelog at all — its history is the commit log and its GitHub Releases. A `CHANGELOG.md` at the root of a fork reads as *the project's* changelog. A changelog inside `version.md` is the sanctioned case — [runbook §8][runbook] says nothing is written and no second file is created |
 | `CLAUDE.md` + `AGENTS.md` twins, with the three echo blocks | The upstream's `CLAUDE.md` (a one-line `@AGENTS.md` pointer) and its `AGENTS.md` | `AGENTS.md` is **their** agent context — it opens on the iPhone app's App Store Connect status and binds to Tony's build history. Stamping echo blocks into it conflicts on every sync, and the twins rule would have us overwrite the pointer too |
 | `.gitignore` | The upstream's, **unedited** | It ignores `.claude/`; the upstream then force-adds `.claude/skills/**` anyway. Our own `.claude/` files will be force-added the same way rather than by editing the rule. Un-ignoring `.claude/` would also un-ignore a `settings.local.json` that must never be committed |
