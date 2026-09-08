@@ -679,7 +679,15 @@ code, pre, .mono { font-family: var(--font-mono); }
 .session-project-wrap:has(.session-project:focus-visible) {
   outline: 2px solid var(--accent); outline-offset: 1px;
 }
-.new-session {
+/* ⚠️ ONE RULE FOR BOTH, SO THEY CANNOT DRIFT APART AGAIN. "New session", "New
+   project" and "New group chat" are the same kind of action and now say so with
+   the same declarations rather than two rules that happen to agree. The group
+   button used to be a second tier — dashed, transparent, muted — which only
+   ever appeared directly beneath its solid sibling with nothing between them to
+   establish the pattern, so it read as a mistake rather than a hierarchy. Tony:
+   "should look the same as new session button." */
+.new-session,
+.new-group-btn {
   margin: 2px 12px 10px;
   padding: 8px 12px;
   border: 1px solid var(--border);
@@ -688,15 +696,10 @@ code, pre, .mono { font-family: var(--font-mono); }
   box-shadow: var(--shadow-sm);
   display: flex; align-items: center; gap: 8px;
   font-weight: 500;
+  cursor: pointer;
 }
-.new-session:hover { background: var(--bg-hover); }
-.new-group-btn {
-  margin: -4px 12px 10px; padding: 7px 12px;
-  border: 1px dashed var(--border); border-radius: var(--radius);
-  background: transparent; color: var(--text-muted);
-  display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 500; cursor: pointer;
-}
-.new-group-btn:hover { border-color: var(--accent-dim); color: var(--accent); background: var(--bg-hover); }
+.new-session:hover,
+.new-group-btn:hover { background: var(--bg-hover); border-color: var(--accent-dim); }
 .app > .group-modal-backdrop { position: fixed; inset: 0; z-index: 130; background: rgba(0,0,0,0.55); display: grid; place-items: center; }
 .group-modal { width: min(460px, 92vw); }
 .group-modal .group-picker { margin: 0; max-width: none; box-shadow: var(--shadow-lg); }

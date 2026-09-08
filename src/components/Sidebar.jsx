@@ -426,7 +426,13 @@ export default function Sidebar ({ section = 'chat', onSection, onOpenAgents, se
           : <button className='new-group-btn' onClick={() => setEditing({ kind: 'new-project', value: '' })}><Icon.folder size={13} /> New project</button>
       )}
       {view === 'bots' && agents.length >= 2 && onNewGroup && (
-        <button className='new-group-btn' onClick={() => onNewGroup()}>👥 New group chat</button>
+        /* ⚠️ AN ICON, NOT AN EMOJI. Its sibling "New project" uses Icon.folder,
+           a line drawing that inherits currentColor — so on hover, where
+           .new-group-btn:hover sets color: var(--accent), the folder turned
+           accent and the emoji stayed the same blue it always is. Same class,
+           same row, one responding to the theme and one not. Icon.users was
+           already in the set, unused. */
+        <button className='new-group-btn' onClick={() => onNewGroup()}><Icon.users size={13} /> New group chat</button>
       )}
 
       {view === 'chats' ? (
