@@ -1,6 +1,6 @@
 {
   "name": "radiant",
-  "version": "0.7.6",
+  "version": "0.7.7",
   "private": true,
   "description": "Radiant — a local coding harness: chat with coding agents across cloud and local models.",
   "author": "Tony Ricciardi",
@@ -17,6 +17,8 @@
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true",
     "release": "node scripts/release.mjs",
     "test:smoke": "node scripts/test-smoke.mjs",
+    "test:notify": "node scripts/test-notify.mjs",
+    "test:cwd": "node scripts/test-cwd.mjs",
     "test:api": "node scripts/test-api.mjs",
     "test:contrast": "node scripts/test-contrast.mjs",
     "test:supply": "node scripts/test-supply-chain.mjs",
