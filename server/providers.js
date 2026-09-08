@@ -8,7 +8,31 @@ import { COMPUTER_TOOL_DEFS, COMPUTER_TOOL_NAMES, COMPUTER_SAFE, runComputerTool
 import { boundResult, withBudget, MAX_TOOL_MS, ToolTimeout } from './tool-bounds.js'
 import { COPILOT_HEADERS } from './oauth.js'
 
-const MAX_ROUNDS = 30
+// ⚠️ THIS WAS 30, AND 30 IS SMALLER THAN AN ORDINARY JOB. Tony asked Radiant to
+// pull a page of skills and install them; the turn that was actually doing it
+// spent 14 fetch_url and 13 write_file calls — 27 of its 30 rounds on the work
+// itself — and was cut off mid-install. Three turns before it had gone the same
+// way, one of them spending 20 rounds just reading files. "why does it keep
+// stopping. This is fucking ridiculous."
+//
+// A round cap is a backstop against an agent looping forever. It is NOT a work
+// budget, and using it as one stops real work at an arbitrary line. The thing
+// that actually catches a stuck agent is right below this: identical calls,
+// counted. That existed the whole time and only ever printed a nudge.
+//
+// So the backstop moves out of the way of real work, and the detector that
+// knows the difference between "working" and "stuck" gets teeth.
+const MAX_ROUNDS = 200
+
+// ⚠️ AND A REAL CEILING ON WHAT A TURN MAY SPEND, because 200 rounds of a
+// re-sent conversation is a bill, and a round count never measured the bill
+// anyway. One stuck chat cost 25.7 million input tokens across 12 turns.
+// Tokens are what runs out; tokens are what is counted.
+const MAX_TURN_TOKENS = Number(process.env.RADIANT_MAX_TURN_TOKENS || 2_000_000)
+
+// Identical consecutive calls. Nudged at 3, 5 and 8 — and if it is STILL making
+// the same call after that, it is not going to stop on its own.
+const STUCK_AT = 12
 
 function systemPrompt (cwd, useTools, model, computerControl, skills, persona, planMode, memory) {
   const personaText = persona ? `\n\n${persona}` : ''
@@ -628,6 +652,17 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
     // Aborting returns cleanly rather than throwing: the partial answer is real
     // work and belongs in the transcript.
     if (signal?.aborted) { finishStats(); emit({ type: 'stopped' }); return }
+    // The economic backstop. A round count never measured cost; this does.
+    if (stats.inTokens + stats.outTokens > MAX_TURN_TOKENS) {
+      finishStats()
+      emit({
+        type: 'halt',
+        reason: 'budget',
+        text: `This turn has used ${Math.round((stats.inTokens + stats.outTokens) / 1e6 * 10) / 10}M tokens and was stopped before it spent more. Everything above is saved; Continue starts a fresh turn from here, which also costs less because the conversation gets summarized.`
+      })
+      emit({ type: 'done' })
+      return
+    }
     emit({ type: 'round_start', round })
     const args = {
       baseUrl: provider.baseUrl,
@@ -802,6 +837,22 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
       repeatCount = sig === lastSig ? repeatCount + 1 : 1
       lastSig = sig
       if (REPEAT_NUDGES[repeatCount]) part.result = `[reminder: ${REPEAT_NUDGES[repeatCount]}]\n\n${part.result ?? ''}`
+      // ⚠️ THE NUDGE WAS THE WHOLE ENFORCEMENT, AND A NUDGE IS A SUGGESTION. An
+      // agent that has made the identical call twelve times has been told three
+      // times to stop and has not. This is what a runaway actually looks like —
+      // not "used a lot of rounds getting work done".
+      if (repeatCount >= STUCK_AT) {
+        emit({ type: 'tool_result', id: call.id, result: part.result, denied: !approved, hasImage: Boolean(part.resultImage) })
+        stats.toolMs += Date.now() - toolLoopStart
+        finishStats()
+        emit({
+          type: 'halt',
+          reason: 'stuck',
+          text: `The agent called ${call.name} the same way ${repeatCount} times in a row and was not getting anywhere, so the turn was stopped. Everything above is saved. Continue picks it up, but it is worth telling it to try something different.`
+        })
+        emit({ type: 'done' })
+        return
+      }
       emit({ type: 'tool_result', id: call.id, result: part.result, denied: !approved, hasImage: Boolean(part.resultImage) })
     }
     stats.toolMs += Date.now() - toolLoopStart
