@@ -261,7 +261,13 @@ async function webSearch (query, count) {
   return out
 }
 
-export async function runTool (name, input, cwd) {
+/**
+ * @param {AbortSignal} [signal] Stop. A shell command is the one tool that can
+ *   run for minutes, and until this was plumbed through, pressing Stop could not
+ *   reach it: execFile had a 120s timeout and no signal, so the turn sat there
+ *   finishing a command the user had already cancelled.
+ */
+export async function runTool (name, input, cwd, signal) {
   try {
     switch (name) {
       case 'list_dir': {
@@ -305,11 +311,15 @@ export async function runTool (name, input, cwd) {
           return `Started in the background as ${id}. Use job_output("${id}") to check on it, job_kill("${id}") to stop it.`
         }
         return await new Promise(resolve => {
-          execFile('bash', ['-lc', input.command], { cwd, timeout: 120_000, maxBuffer: 10 * 1024 * 1024, env: SPAWN_ENV }, (err, stdout, stderr) => {
+          // ⚠️ `signal` KILLS THE CHILD. Without it Stop was a suggestion: the
+          // command ran to completion, or to the 120s timeout, whichever came
+          // first, and the turn could not end until it did.
+          execFile('bash', ['-lc', input.command], { cwd, timeout: 120_000, maxBuffer: 10 * 1024 * 1024, env: SPAWN_ENV, signal }, (err, stdout, stderr) => {
             let out = ''
             if (stdout) out += stdout
             if (stderr) out += (out ? '\n--- stderr ---\n' : '') + stderr
-            if (err && err.killed) out += '\n[command timed out after 120s]'
+            if (err?.name === 'AbortError' || signal?.aborted) out += '\n[stopped by you]'
+            else if (err && err.killed) out += '\n[command timed out after 120s]'
             else if (err && err.code) out += `\n[exit code ${err.code}]`
             resolve(truncate(out || '(no output)'))
           })

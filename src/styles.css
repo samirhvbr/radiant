@@ -3160,3 +3160,9 @@ button.hf-head:hover { background: var(--bg-hover); }
 .lp-review-check { color: var(--text-muted); }
 .lp-review-nocheck { color: var(--text-faint); font-style: italic; }
 
+
+/* Stop was pressed and the turn has not closed yet — an in-flight tool still has
+   to be killed. Without this the button looked like it had done nothing. */
+.send-btn.stop.is-stopping { opacity: .55; cursor: default; animation: stop-pulse 1s ease-in-out infinite; }
+@keyframes stop-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .send-btn.stop.is-stopping { animation: none; } }

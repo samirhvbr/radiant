@@ -1504,7 +1504,14 @@ export default function Chat ({ session, live, todos = [], stats, approval, ques
               {streaming
                 ? <>
                     {(draft.trim() || attachments.length) ? <button className='send-btn queue' onClick={submit} title='Queue this — sends when the agent finishes'><Icon.arrowUp size={17} /></button> : null}
-                    <button className='send-btn stop' onClick={onStop} title='Stop generating'><Icon.stop size={15} /></button>
+                    <button
+                      type='button'
+                      className={'send-btn stop' + (live?.stopping ? ' is-stopping' : '')}
+                      onClick={onStop}
+                      disabled={live?.stopping}
+                      title={live?.stopping ? 'Stopping…' : 'Stop generating'}
+                      aria-label={live?.stopping ? 'Stopping' : 'Stop generating'}
+                    ><Icon.stop size={15} /></button>
                   </>
                 : <button className='send-btn' onClick={submit} disabled={!draft.trim() && !attachments.length} title='Send message'><Icon.arrowUp size={17} /></button>}
             </div>

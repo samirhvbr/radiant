@@ -499,6 +499,13 @@ function DesktopApp () {
           }
           case 'usage': setUsage(u => ({ input: ev.input ?? u?.input, output: ev.output ?? u?.output })); break
           case 'notice': liveMsg.parts.push({ type: 'notice', text: ev.text }); break
+          // ⚠️ THE TURN SAYS IT STOPPED, rather than the stream merely ending.
+          // A stream that just stops is indistinguishable from a dropped
+          // connection, and the client shows a scary banner for that one.
+          case 'stopped':
+            sawEnd = true
+            liveMsg.parts.push({ type: 'notice', text: 'Stopped.' })
+            break
           case 'todos': setTodos(ev.todos || []); break
           case 'title': setSession(s => (s && s.id === sessionId ? { ...s, title: ev.title } : s)); refreshSessions(); break
           case 'skill_suggested':
@@ -534,7 +541,14 @@ function DesktopApp () {
     }
   }
 
-  const stop = () => { if (session) api.abort(session.id) }
+  // ⚠️ SAY SO IMMEDIATELY. Stopping is not instant — an in-flight tool has to be
+  // killed and the stream has to close — and with no acknowledgement the button
+  // read as broken. Tony: "the stop button does not seem to be doing anything."
+  const stop = () => {
+    if (!session) return
+    setLive(l => (l ? { ...l, stopping: true } : l))
+    api.abort(session.id).catch(e => setError(e.message))
+  }
 
   // global keyboard shortcuts
   useEffect(() => {

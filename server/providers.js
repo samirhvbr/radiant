@@ -607,6 +607,15 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
   const emitS = ev => { if (ev.type === 'usage') { stats.inTokens += ev.input || 0; stats.outTokens += ev.output || 0 } emit(ev) }
   const finishStats = () => { session.stats = stats; emit({ type: 'stats', stats }) }
   for (let round = 0; round < MAX_ROUNDS; round++) {
+    // ⚠️ STOP HAD EXACTLY ONE CHECK IN THIS WHOLE FUNCTION, and it sat after the
+    // approval prompt. Everywhere else the turn found out it had been cancelled
+    // only when the NEXT model request rejected — so pressing Stop while tools
+    // were running ran every remaining tool first, and a shell command ran to
+    // completion or to its two-minute timeout. Tony: "the stop button does not
+    // seem to be doing anything… agent just keeps talking and talking."
+    // Aborting returns cleanly rather than throwing: the partial answer is real
+    // work and belongs in the transcript.
+    if (signal?.aborted) { finishStats(); emit({ type: 'stopped' }); return }
     emit({ type: 'round_start', round })
     const args = {
       baseUrl: provider.baseUrl,
@@ -668,6 +677,9 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
 
     const toolLoopStart = Date.now()
     for (const call of toolParts) {
+      // A model can ask for several tools in one round. Stop means stop before
+      // the next one, not after all of them.
+      if (signal?.aborted) { stats.toolMs += Date.now() - toolLoopStart; finishStats(); emit({ type: 'stopped' }); return }
       const part = { type: 'tool', id: call.id, name: call.name, args: call.args }
       assistant.parts.push(part)
       emit({ type: 'tool_start', id: call.id, name: call.name, args: call.args })
@@ -686,7 +698,7 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
       const needsApproval = requestApproval && (call.name === 'run_command' || isMcp || isWrite || leavesWorkspace ||
         (isComputer && !COMPUTER_SAFE.has(call.name) && !autoApproveComputer))
       const approved = needsApproval ? await requestApproval(call) : true
-      if (signal.aborted) return
+      if (signal?.aborted) { finishStats(); emit({ type: 'stopped' }); return }
       if (!approved) {
         part.denied = true
         part.result = 'The user declined this action. Ask them how they would like to proceed, or try a different approach.'
@@ -747,7 +759,7 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
         part.result = r.content
         if (r.image) part.resultImage = r.image
       } else {
-        part.result = await runTool(call.name, call.args, cwd)
+        part.result = await runTool(call.name, call.args, cwd, signal)
       }
       // loop-breaker: append an escalating reminder on identical consecutive calls
       if (call.name !== 'ask_user') askStreak = 0
@@ -758,6 +770,7 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
       emit({ type: 'tool_result', id: call.id, result: part.result, denied: !approved, hasImage: Boolean(part.resultImage) })
     }
     stats.toolMs += Date.now() - toolLoopStart
+    if (signal?.aborted) { finishStats(); emit({ type: 'stopped' }); return }
   }
   finishStats()
   emit({ type: 'notice', text: `Stopped after ${MAX_ROUNDS} tool rounds.` })
