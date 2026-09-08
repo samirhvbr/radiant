@@ -21,9 +21,11 @@ run "cloud model"    node scripts/test-cloud-model.mjs
 run "electron-safe"  node scripts/test-electron-safe.mjs
 run "agents"          node scripts/test-agents.mjs
 run "the task board"  node scripts/test-tasks.mjs
-run "loops + graph"   node scripts/test-loops.mjs
+run "loops"          node scripts/test-loops.mjs
 run "the loop runner" node scripts/test-loop-run.mjs
 run "stop"           node scripts/test-stop.mjs
+run "graph rules"    node scripts/test-graph.mjs
+run "the graph runner" node scripts/test-graph-run.mjs
 run "sessions"       node scripts/test-sessions.mjs
 run "the running app" bash scripts/test-ui.sh
 printf '\n'

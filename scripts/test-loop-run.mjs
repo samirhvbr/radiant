@@ -128,33 +128,6 @@ ok('a loop with no steps is refused', Boolean(empty.error))
 const idle = await j('POST', `/api/loops/${l4.id}/advance`)
 ok('advancing a loop that is not running does nothing', idle.action === 'idle', idle.action)
 
-// ── the graph decides file-vs-folder from the filesystem, not from the name ──
-// ⚠️ A FOLDER IS ALLOWED A DOT IN ITS NAME. The client used to guess by looking
-// for an extension, and Tony's own Google Drive folder is called
-// "GoogleDrive-tony@templetongroup.ai" — so choosing a FOLDER drew it file by
-// file. Only the end that can stat the path may answer this.
-{
-  const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs')
-  const { tmpdir } = await import('node:os')
-  const { join } = await import('node:path')
-  const g = mkdtempSync(join(tmpdir(), 'rx-lvl-'))
-  const dotted = join(g, 'GoogleDrive-tony@templetongroup.ai')
-  mkdirSync(dotted, { recursive: true })
-  writeFileSync(join(dotted, 'a.js'), "import './b.js'\n")
-  writeFileSync(join(dotted, 'b.js'), 'export const b = 1\n')
-
-  const folder = await j('POST', '/api/graph/scan', { path: dotted })
-  ok('a folder with a dot in its name is drawn as a folder', folder.level === 'folder', folder.level)
-  const file = await j('POST', '/api/graph/scan', { path: join(dotted, 'a.js') })
-  ok('and choosing a file is drawn file by file', file.level === 'file', file.level)
-  ok('a file draws the folder it lives in', file.nodes.some(n => n.id === 'a.js') && file.nodes.some(n => n.id === 'b.js'))
-  // An explicit choice still wins over what was pointed at.
-  const forced = await j('POST', '/api/graph/scan', { path: join(dotted, 'a.js'), level: 'folder' })
-  ok('an explicit level overrides both', forced.level === 'folder', forced.level)
-  const missing = await j('POST', '/api/graph/scan', { path: join(g, 'not-there') })
-  ok('a path that is not there says so rather than drawing nothing', Boolean(missing.error))
-}
-
 stop()
 console.log(`\n${pass}/${pass + fail} passed  ·  the loop retries what fails and stops when it cannot pass`)
 process.exit(fail ? 1 : 0)

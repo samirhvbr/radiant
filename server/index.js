@@ -11,7 +11,7 @@ import { fileURLToPath } from 'url'
 import { WebSocketServer } from 'ws'
 import pty from 'node-pty'
 import { execSync, spawn } from 'child_process'
-import { RADIANT_DIR, DIR_POINTER, defaultDataDir, dataDirStatus, loadConfig, saveConfig, publicConfig, listSessions, loadSession, saveSession, deleteSession, searchSessions, upsertCredential, activateAccount, removeAccount, SESSIONS_DIR, listProjects, getProject, saveProject, deleteProject, migrateProjects, agentsStore, skillsStore, recipesStore, cloudStatus, MACHINE_KEYS, saveMachineSettings, skillLibrary, inspectSkillFolder, resolveSkillDir, USER_SKILLS_ROOT, repairCloudFolder, builtinAgent, listTasks, loadTask, saveTask, deleteTask, TASK_STATES, listLoops, loadLoop, saveLoop, deleteLoop, LOOP_STATES, saveTurnSession } from './config.js'
+import { RADIANT_DIR, DIR_POINTER, defaultDataDir, dataDirStatus, loadConfig, saveConfig, publicConfig, listSessions, loadSession, saveSession, deleteSession, searchSessions, upsertCredential, activateAccount, removeAccount, SESSIONS_DIR, listProjects, getProject, saveProject, deleteProject, migrateProjects, agentsStore, skillsStore, recipesStore, cloudStatus, MACHINE_KEYS, saveMachineSettings, skillLibrary, inspectSkillFolder, resolveSkillDir, USER_SKILLS_ROOT, repairCloudFolder, builtinAgent, listTasks, loadTask, saveTask, deleteTask, TASK_STATES, listLoops, loadLoop, saveLoop, deleteLoop, LOOP_STATES, listGraphs, loadGraph, saveGraph, deleteGraph, saveTurnSession } from './config.js'
 import { runTurn, listModels } from './providers.js'
 import { OAUTH_PROVIDERS, buildAuthUrl, completePaste, startLoopback, validAccessToken, startDevice, pollDevice } from './oauth.js'
 import { checkForUpdate } from './updater.js'
@@ -19,8 +19,9 @@ import { ollamaBin, hermesBin, SPAWN_ENV } from './ollama.js'
 import { commandRisk } from './util.js'
 import { listFacts, addFacts, addFactManual, deleteFact, clearFacts, relevantFacts } from './memory.js'
 import { shouldReflect, reflectionPrompt, parseProposal, addSuggestion } from './skillsmith.js'
-import { scanRepo } from './graph.js'
 import { normalizeStep, workPrompt, checkPrompt, readVerdict } from './loop-rules.js'
+import { normalizeNode, planLayers, suspectEdges, toMermaid, DEFAULT_CONCURRENCY } from './graph-rules.js'
+import { runGraph, isRunning, liveRun, stopGraph } from './graph-run.js'
 
 const PORT = Number(process.env.RADIANT_PORT || 5834)
 const app = express()
@@ -2248,6 +2249,122 @@ app.post('/api/loops/:id/stop', (req, res) => {
   for (const s of loop.steps) if (s.state === 'working' || s.state === 'checking') s.state = 'pending'
   res.json(saveLoop(loop))
 })
+// ---- graphs (the layer above the loop) ----
+// ⚠️ A LOOP IS ONE JOB THAT KEEPS GOING UNTIL IT VERIFIES. A GRAPH IS SEVERAL
+// JOBS THAT DO NOT WAIT FOR EACH OTHER. Nodes are units of work; an edge exists
+// only where one node actually reads another's output. Everything not waiting
+// runs at the same time — see server/graph-run.js, which is the first thing in
+// this app to run more than one turn at once.
+const GRAPH_ID = () => 'graph-' + Math.random().toString(36).slice(2, 10)
+
+// The one place a graph's turns get their credentials, resolved exactly the way
+// the chat handler resolves them so there is no second answer to "which key".
+async function graphCreds (providerId) {
+  const cfg = loadConfig()
+  let provider = cfg.providers.find(p => p.id === providerId)
+  if (!provider) return null
+  if (provider.id === 'qwen' && cfg.oauth.qwen?.apiBase) provider = { ...provider, baseUrl: cfg.oauth.qwen.apiBase }
+  const apiKey = cfg.keys[provider.id]
+  const hasOAuth = Boolean(cfg.oauth[provider.id])
+  if (provider.auth === 'key' && !apiKey && !hasOAuth) return null
+  return {
+    provider,
+    apiKey,
+    getAccessToken: hasOAuth ? () => validAccessToken(provider.id, loadConfig(), saveConfig) : null,
+    getAccountId: hasOAuth ? () => loadConfig().oauth[provider.id]?.accountId || null : null
+  }
+}
+const graphDeps = { loadConfig, saveSession, agentsStore, getProject, credFor: graphCreds }
+
+app.get('/api/graphs', (req, res) => res.json(listGraphs().map(g => ({ ...g, running: isRunning(g.id) }))))
+
+app.get('/api/graphs/:id', (req, res) => {
+  const g = loadGraph(req.params.id)
+  if (!g) return res.status(404).json({ error: 'No such graph.' })
+  // The live run outranks the saved one — a run in flight is only in memory.
+  res.json({ ...g, running: isRunning(g.id), run: liveRun(g.id) || g.run || null })
+})
+
+app.post('/api/graphs', (req, res) => {
+  const b = req.body || {}
+  const title = String(b.title || '').trim()
+  if (!title) return res.status(400).json({ error: 'A graph needs a goal.' })
+  const nodes = (Array.isArray(b.nodes) ? b.nodes : []).map(n => normalizeNode(n)).filter(n => n.title)
+  if (!nodes.length) return res.status(400).json({ error: 'A graph needs at least one step.' })
+  const { error } = planLayers(nodes)
+  if (error) return res.status(400).json({ error })
+  res.json(saveGraph({
+    id: GRAPH_ID(),
+    title,
+    detail: String(b.detail || ''),
+    cwd: b.cwd || null,
+    projectId: b.projectId || null,
+    concurrency: Number(b.concurrency) || DEFAULT_CONCURRENCY,
+    // ⚠️ OFF UNLESS THE USER SAYS OTHERWISE. With this on, several agents run
+    // shell commands at once with nobody watching. It is a real capability and
+    // it is a deliberate choice, never a default.
+    autoApprove: b.autoApprove === true,
+    nodes,
+    run: null,
+    createdAt: new Date().toISOString()
+  }))
+})
+
+app.patch('/api/graphs/:id', (req, res) => {
+  const g = loadGraph(req.params.id)
+  if (!g) return res.status(404).json({ error: 'No such graph.' })
+  if (isRunning(g.id)) return res.status(409).json({ error: 'Stop the graph before changing it.' })
+  const b = req.body || {}
+  if (b.title !== undefined) g.title = String(b.title).trim() || g.title
+  if (b.detail !== undefined) g.detail = String(b.detail)
+  if (b.cwd !== undefined) g.cwd = b.cwd || null
+  if (b.projectId !== undefined) g.projectId = b.projectId || null
+  if (b.concurrency !== undefined) g.concurrency = Number(b.concurrency) || DEFAULT_CONCURRENCY
+  if (b.autoApprove !== undefined) g.autoApprove = b.autoApprove === true
+  if (Array.isArray(b.nodes)) {
+    const byId = new Map(g.nodes.map(n => [n.id, n]))
+    const nodes = b.nodes.map(n => normalizeNode(n, byId.get(n.id))).filter(n => n.title)
+    if (!nodes.length) return res.status(400).json({ error: 'A graph needs at least one step.' })
+    const { error } = planLayers(nodes)
+    if (error) return res.status(400).json({ error })
+    g.nodes = nodes
+  }
+  res.json(saveGraph(g))
+})
+
+app.delete('/api/graphs/:id', (req, res) => { deleteGraph(req.params.id); res.json({ ok: true }) })
+
+// What would run at the same time, and which waits look fake. Answered before
+// anything is spent, because the shape is the thing worth checking.
+app.get('/api/graphs/:id/plan', (req, res) => {
+  const g = loadGraph(req.params.id)
+  if (!g) return res.status(404).json({ error: 'No such graph.' })
+  const { layers, error } = planLayers(g.nodes)
+  res.json({ layers, error, suspect: suspectEdges(g.nodes), mermaid: toMermaid(g, liveRun(g.id) || g.run) })
+})
+
+// ⚠️ RETURNS IMMEDIATELY. The run keeps going on the server with nobody watching
+// — that is the whole point of a graph — and the client polls. Holding the
+// request open would tie the run to a browser tab.
+app.post('/api/graphs/:id/run', (req, res) => {
+  const g = loadGraph(req.params.id)
+  if (!g) return res.status(404).json({ error: 'No such graph.' })
+  if (isRunning(g.id)) return res.status(409).json({ error: 'That graph is already running.' })
+  const { error } = planLayers(g.nodes)
+  if (error) return res.status(400).json({ error })
+  runGraph(g, graphDeps, run => {
+    // Persist as it goes, so closing the window loses nothing.
+    try { saveGraph({ ...loadGraph(g.id), run }) } catch {}
+  }).catch(e => {
+    try { saveGraph({ ...loadGraph(g.id), run: { state: 'failed', error: e.message, nodes: {}, finishedAt: new Date().toISOString() } }) } catch {}
+  })
+  res.json({ ok: true, started: true })
+})
+
+app.post('/api/graphs/:id/stop', (req, res) => {
+  res.json({ ok: true, stopped: stopGraph(req.params.id) })
+})
+
 
 /**
  * The pump. Call it once when a loop starts and once after every turn it hands
@@ -2335,32 +2452,6 @@ app.post('/api/loops/:id/advance', (req, res) => {
   return res.json({ loop, action: 'blocked', error: 'The loop stopped making progress.' })
 })
 
-// ---- graphs ----
-// ⚠️ THE SCAN IS SYNCHRONOUS AND IT IS CAPPED. It runs on the same process that
-// streams chat, so the caps in graph.js are what stop a mistyped path — a home
-// folder, a mounted volume — from stalling a turn. See MAX_FILES/MAX_DEPTH there.
-app.post('/api/graph/scan', (req, res) => {
-  const raw = String(req.body?.path || '').trim()
-  if (!raw) return res.status(400).json({ error: 'Point at a folder first.' })
-  const dir = raw.startsWith('~') ? path.join(os.homedir(), raw.slice(1)) : raw
-  if (!path.isAbsolute(dir)) return res.status(400).json({ error: 'Use a full path, starting with /.' })
-  let st
-  try { st = fs.statSync(dir) } catch { return res.status(404).json({ error: `There is nothing at ${dir}.` }) }
-  // Pointing at a file is a reasonable thing to do by accident; read its folder.
-  const root = st.isDirectory() ? dir : path.dirname(dir)
-  // ⚠️ ONLY THE FILESYSTEM KNOWS WHETHER THAT WAS A FILE. The client guessed by
-  // looking for a dot in the name, and Tony's own Google Drive folder is called
-  // "GoogleDrive-tony@templetongroup.ai" — so choosing a folder switched the view
-  // to file level. A folder is allowed a dot in its name; this end has already
-  // stat'ed the path, so it answers instead of guessing.
-  const asked = req.body?.level
-  const level = asked === 'file' || asked === 'folder' ? asked : (st.isDirectory() ? 'folder' : 'file')
-  try {
-    res.json(scanRepo(root, { level }))
-  } catch (e) {
-    res.status(500).json({ error: `Could not read that folder: ${e.message}` })
-  }
-})
 
 // `active` reports whether a turn is streaming for this session right now.
 // activeTurns is in-memory, so until this landed nothing outside the process

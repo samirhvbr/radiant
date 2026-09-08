@@ -8,7 +8,7 @@ import RightPanel from './components/RightPanel.jsx'
 import Settings from './components/Settings.jsx'
 import TaskBoard from './components/TaskBoard.jsx'
 import LoopBoard from './components/LoopBoard.jsx'
-import GraphView from './components/GraphView.jsx'
+import GraphBoard from './components/GraphBoard.jsx'
 import MotionBackground from './components/MotionBackground.jsx'
 import CommandPalette from './components/CommandPalette.jsx'
 import ComparePanel from './components/ComparePanel.jsx'
@@ -625,21 +625,15 @@ function DesktopApp () {
           onRefreshModels={refreshModels}
         />
       ) : view === 'graph' ? (
-        <GraphView
-          defaultPath={session?.cwd || config.settings.defaultCwd || ''}
-          mode={config.settings.mode}
+        <GraphBoard
+          agents={config.agents || []}
+          models={models}
           projects={projects}
+          defaultCwd={session?.cwd || config.settings.defaultCwd || ''}
+          mode={config.settings.mode}
+          onOpenSession={id => { setView('chat'); openSession(id) }}
           onError={setError}
-          onExplain={async text => {
-            // A scan is a fact; what it means is a conversation. Hand the real
-            // diagram over rather than pointing the model at the repo again and
-            // getting a second, different opinion of it.
-            try {
-              const s = await newSession()
-              setView('chat')
-              setPendingPrompt({ sessionId: s.id, text })
-            } catch (e) { setError(e.message) }
-          }}
+          onRefreshModels={refreshModels}
         />
       ) : view === 'tasks' ? (
         <TaskBoard

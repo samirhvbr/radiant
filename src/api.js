@@ -324,8 +324,19 @@ export const api = {
   stopLoop: id => json('POST', `/api/loops/${id}/stop`),
   advanceLoop: id => json('POST', `/api/loops/${id}/advance`),
 
-  // ---- graph ----
-  scanGraph: (path, level) => json('POST', '/api/graph/scan', { path, level }),
+  // ---- graphs ----
+  // ⚠️ `run` RETURNS AT ONCE and the run continues on the server, several nodes
+  // at a time, with nobody watching. That is the point of a graph, and it is why
+  // this polls instead of streaming: the run is not tied to a browser tab.
+  listGraphs: () => json('GET', '/api/graphs'),
+  getGraph: id => json('GET', `/api/graphs/${id}`),
+  createGraph: g => json('POST', '/api/graphs', g),
+  patchGraph: (id, patch) => json('PATCH', `/api/graphs/${id}`, patch),
+  deleteGraph: id => json('DELETE', `/api/graphs/${id}`),
+  graphPlan: id => json('GET', `/api/graphs/${id}/plan`),
+  runGraph: id => json('POST', `/api/graphs/${id}/run`),
+  stopGraph: id => json('POST', `/api/graphs/${id}/stop`),
+
   searchSessions: q => json('GET', `/api/sessions-search?q=${encodeURIComponent(q)}`),
   createSession: body => json('POST', '/api/sessions', body || {}),
   getSession: id => json('GET', `/api/sessions/${id}`),

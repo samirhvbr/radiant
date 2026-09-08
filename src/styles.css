@@ -2986,70 +2986,69 @@ button.hf-head:hover { background: var(--bg-hover); }
 .lp-step-fail { margin-top: 4px; font-size: 11px; color: var(--accent); line-height: 1.45; }
 .lp-step .lp-mini { margin-top: 6px; }
 
-/* ── graph ──────────────────────────────────────────────────────────────────
-   The drawing gets the room; everything measured about it sits in a column
-   beside it, because the numbers are what you check the picture against. */
-.gv { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
-.gv-head { display: flex; align-items: flex-start; gap: 12px; padding: 14px 18px 10px; }
-.gv-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
-.gv-sub { margin: 3px 0 0; font-size: 12px; color: var(--text-muted); line-height: 1.55; max-width: 74ch; }
-/* ⚠️ align-items: flex-start, OR THE BUTTON GROWS TO THE PICKER'S HEIGHT. A flex
-   row stretches its children by default, and the picker is three rows tall, so
-   "Draw it" rendered as a 250px slab of accent colour down the middle of the
-   screen. flex:none on the button does not help — that is the main axis. */
-.gv-point { padding: 0 18px 10px; }
+/* ── graphs ─────────────────────────────────────────────────────────────────
+   Nodes and edges. The picture is the point: it is the only place the shape of
+   the run is visible, and the shape is what decides whether anything is
+   actually running at the same time. */
+.gb { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); overflow-y: auto; }
+.gb-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 18px 10px; }
+.gb-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
+.gb-sub { margin: 3px 0 0; font-size: 11.5px; color: var(--text-muted); line-height: 1.55; max-width: 74ch; }
 
-.gv-levels { display: flex; gap: 6px; padding: 0 18px 10px; }
-.gv-error { margin: 0 18px 12px; font-size: 12px; color: var(--accent); line-height: 1.5; }
+.gb-compose { display: flex; flex-direction: column; gap: 10px; padding: 0 18px 14px; }
+.gb-node { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 12px; background: var(--bg-panel); }
+.gb-node-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gb-node-n { font-size: 11px; font-weight: 600; color: var(--text-muted); }
+.gb-kinds { display: flex; gap: 4px; margin-right: auto; }
+.gb-node-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gb-reduce { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
-.gv-blank { padding: 4px 18px 20px; max-width: 58ch; }
-.gv-blank-lead { margin: 0 0 4px; font-size: 13px; color: var(--text); }
-.gv-blank-sub { margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+/* The dependency list is the real control on this screen — everything unticked
+   runs at the same time as this step. */
+.gb-deps { display: flex; flex-direction: column; gap: 5px; }
+.gb-dep-list { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.gb-dep { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; }
+.gb-dep input { accent-color: var(--accent); }
+.gb-compose-foot { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.gb-compose-foot .rx-btn-go { margin-left: auto; }
+.gb-auto { display: flex; gap: 7px; align-items: flex-start; max-width: 52ch; font-size: 11.5px; color: var(--text); cursor: pointer; }
+.gb-auto input { accent-color: var(--accent); margin-top: 2px; }
+.gb-auto i { display: block; color: var(--text-faint); font-style: normal; line-height: 1.45; }
 
-.gv-body { flex: 1; min-height: 0; display: flex; gap: 14px; padding: 0 18px 18px; }
-.gv-canvas {
-  flex: 1; min-width: 0; overflow: auto;
-  border-radius: 14px; background: var(--bg-panel); padding: 16px;
+.gb-list { display: flex; flex-direction: column; gap: 12px; padding: 0 18px 18px; }
+.gb-card { border-radius: 14px; background: var(--bg-panel); padding: 12px 14px; }
+.gb-card.is-running { box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--accent) 55%, transparent); }
+.gb-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; cursor: pointer; }
+.gb-card-title { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--text); }
+.gb-card-state { margin-top: 2px; font-size: 11px; color: var(--text-muted); }
+.gb-card-acts { display: flex; gap: 6px; flex: none; }
+
+.gb-open { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.gb-layers { margin: 0; font-size: 11.5px; color: var(--text-muted); }
+/* Advice, never an edit. */
+.gb-suspect { margin: 0; font-size: 11px; color: var(--accent); line-height: 1.45; }
+.gb-canvas { overflow: auto; border-radius: 10px; background: var(--bg-input); padding: 12px; }
+
+.gb-nodes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.gb-run-node { display: flex; gap: 10px; padding: 8px; border-radius: 9px; }
+.gb-run-node.is-running { background: var(--bg-input); }
+.gb-run-state { flex: none; width: 62px; font-size: 10.5px; color: var(--text-faint); padding-top: 1px; }
+.gb-run-node.is-done .gb-run-state { color: var(--ok, oklch(0.72 0.15 155)); }
+.gb-run-node.is-failed .gb-run-state, .gb-run-node.is-running .gb-run-state { color: var(--accent); }
+.gb-run-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.gb-run-main b { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.gb-run-kind { font-size: 11px; color: var(--text-faint); }
+.gb-run-error { font-size: 11px; color: var(--accent); line-height: 1.45; }
+.gb-run-out {
+  margin: 2px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--bg-input);
+  font-size: 11px; color: var(--text-muted); white-space: pre-wrap; overflow-x: auto; max-height: 180px;
 }
+
 /* ⚠️ mermaid SIZES ITS SVG TO THE BOX IT IS GIVEN. Without a width the diagram
    collapses to a sliver in a flex child; without the scroll above, a wide one is
    clipped with no way to reach the rest of it. */
 .gv-mermaid { min-width: min-content; }
 .gv-mermaid svg { max-width: none; height: auto; }
-
-.gv-side {
-  flex: none; width: 236px; overflow-y: auto;
-  display: flex; flex-direction: column; gap: 14px;
-}
-.gv-stat-row { display: flex; gap: 8px; }
-.gv-stat {
-  flex: 1; border-radius: 10px; background: var(--bg-panel); padding: 8px 10px;
-  display: flex; flex-direction: column; gap: 1px;
-}
-.gv-stat b { font-size: 15px; font-weight: 600; color: var(--text); }
-.gv-stat span { font-size: 10px; color: var(--text-faint); }
-.gv-note { margin: 0; font-size: 11px; color: var(--text-muted); line-height: 1.5; }
-.gv-note.gv-warn { color: var(--accent); }
-.gv-block { display: flex; flex-direction: column; gap: 5px; }
-.gv-block-title { margin: 0; font-size: 11px; font-weight: 600; color: var(--text); }
-.gv-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
-.gv-list li { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--text-muted); }
-.gv-list code { font-size: 11px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gv-dim { color: var(--text-faint); flex: none; }
-.gv-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 6px; }
-.gv-act {
-  padding: 5px 10px; border-radius: 7px; border: 1px solid var(--line, transparent);
-  background: var(--bg-raised); color: var(--text); font: inherit; font-size: 11.5px; cursor: pointer;
-}
-.gv-act:hover { background: var(--bg-hover); }
-.gv-act:disabled { opacity: .4; cursor: default; }
-
-/* A narrow window puts the numbers under the drawing rather than squeezing both. */
-@media (max-width: 900px) {
-  .gv-body { flex-direction: column; }
-  .gv-side { width: auto; flex: none; }
-  .gv-acts { margin-top: 0; }
-}
 
 /* ── one button size ────────────────────────────────────────────────────────
    ⚠️ SAME JOB, SAME SIZE. Choose folder, Draw it, Folders, Files, Explain this

@@ -91,6 +91,7 @@ export const SESSIONS_DIR = path.join(RADIANT_DIR, 'sessions')
 export const PROJECTS_DIR = path.join(RADIANT_DIR, 'projects')
 export const TASKS_DIR = path.join(RADIANT_DIR, 'tasks')
 export const LOOPS_DIR = path.join(RADIANT_DIR, 'loops')
+export const GRAPHS_DIR = path.join(RADIANT_DIR, 'graphs')
 const CONFIG_PATH = path.join(RADIANT_DIR, 'config.json')
 
 /** What the UI needs to describe the current location honestly. */
@@ -376,6 +377,7 @@ function ensureDirs () {
   fs.mkdirSync(PROJECTS_DIR, { recursive: true })
   fs.mkdirSync(TASKS_DIR, { recursive: true })
   fs.mkdirSync(LOOPS_DIR, { recursive: true })
+  fs.mkdirSync(GRAPHS_DIR, { recursive: true })
 }
 
 // ⚠️ A HALF-WRITTEN FILE IN A CLOUD FOLDER GETS SYNCED AS-IS. writeFileSync
@@ -1042,6 +1044,37 @@ export function saveLoop (loop) {
 export function deleteLoop (id) {
   if (!/^[a-z0-9-]+$/.test(id)) return
   try { fs.unlinkSync(path.join(LOOPS_DIR, id + '.json')) } catch {}
+}
+
+// ---- graphs ----
+// A loop is one job that keeps going until it verifies. A graph is several jobs
+// that do not wait for each other: nodes are units of work, an edge exists only
+// where one node reads another's output, and everything not waiting runs at once.
+export function listGraphs () {
+  ensureDirs()
+  return fs.readdirSync(GRAPHS_DIR)
+    .filter(f => f.endsWith('.json'))
+    .map(f => { try { return JSON.parse(fs.readFileSync(path.join(GRAPHS_DIR, f), 'utf8')) } catch { return null } })
+    .filter(Boolean)
+    .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+}
+
+export function loadGraph (id) {
+  if (!/^[a-z0-9-]+$/.test(id)) return null
+  try { return JSON.parse(fs.readFileSync(path.join(GRAPHS_DIR, id + '.json'), 'utf8')) } catch { return null }
+}
+
+export function saveGraph (graph) {
+  ensureDirs()
+  if (!/^[a-z0-9-]+$/.test(graph.id)) throw new Error('bad graph id')
+  graph.updatedAt = new Date().toISOString()
+  writeJsonAtomic(path.join(GRAPHS_DIR, graph.id + '.json'), graph)
+  return graph
+}
+
+export function deleteGraph (id) {
+  if (!/^[a-z0-9-]+$/.test(id)) return
+  try { fs.unlinkSync(path.join(GRAPHS_DIR, id + '.json')) } catch {}
 }
 
 // Permanent: unlinks the transcript, every message and every tool call with it.
