@@ -436,7 +436,14 @@ async function anthropicRound ({ baseUrl, apiKey, accessToken, model, messages, 
 // xAI, etc.) get NO markers here — OpenAI's own caching is automatic/implicit and
 // needs no client marker (see openaiRound's usage-observability comment below),
 // and other providers may reject an unrecognized `cache_control` field outright.
-function withOpenRouterClaudeCaching (body, provider, model) {
+function withOpenRouterClaudeCaching (body, provider, model, cachingEnabled) {
+  // ⚠️ THE SETTING HAS TO REACH EVERY PATH IT CLAIMS TO GOVERN. Settings offers
+  // one switch called "Prompt caching (Claude models)", and OpenRouter's Claude
+  // models are Claude models. Reading cachingEnabled in anthropicRound alone
+  // would leave this path caching after the user turned caching off — a switch
+  // that governs one provider and silently not another is worse than no switch,
+  // because the user cannot tell which half they got.
+  if (cachingEnabled === false) return
   if (provider?.id !== 'openrouter' || !/claude/i.test(model || '')) return
   const ephemeral = { type: 'ephemeral' }
   const asBlock = content => typeof content === 'string'
@@ -448,13 +455,13 @@ function withOpenRouterClaudeCaching (body, provider, model) {
   if (last && last !== sys && typeof last.content === 'string') last.content = asBlock(last.content)
 }
 
-async function openaiRound ({ baseUrl, apiKey, accessToken, model, messages, tools, toolDefs, extraHeaders, effort, provider, emit, signal }) {
+async function openaiRound ({ baseUrl, apiKey, accessToken, model, messages, tools, toolDefs, extraHeaders, effort, provider, cachingEnabled, emit, signal }) {
   const body = { model, messages, stream: true }
   if (effort && effort !== 'auto') body.reasoning_effort = effort
   if (tools) {
     body.tools = (toolDefs || TOOL_DEFS).map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } }))
   }
-  withOpenRouterClaudeCaching(body, provider, model)
+  withOpenRouterClaudeCaching(body, provider, model, cachingEnabled)
   const headers = { 'content-type': 'application/json', ...(extraHeaders || {}) }
   const bearer = accessToken || apiKey
   if (bearer) headers.authorization = `Bearer ${bearer}`
