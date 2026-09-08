@@ -109,10 +109,12 @@ export default function GraphView ({ defaultPath = '', mode = 'dark', projects =
           kind='any'
           projects={projects}
           label='Folder or file to draw'
+          actions={
+            <button className='rx-btn rx-btn-go' type='button' onClick={() => scan()} disabled={busy || !path.trim()}>
+              {busy ? 'Reading…' : 'Draw it'}
+            </button>
+          }
         />
-        <button className='rx-btn rx-btn-go' type='button' onClick={() => scan()} disabled={busy || !path.trim()}>
-          {busy ? 'Reading…' : 'Draw it'}
-        </button>
       </div>
 
       {/* Level of detail only means something once there is something drawn. */}

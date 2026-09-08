@@ -2997,8 +2997,7 @@ button.hf-head:hover { background: var(--bg-hover); }
    row stretches its children by default, and the picker is three rows tall, so
    "Draw it" rendered as a 250px slab of accent colour down the middle of the
    screen. flex:none on the button does not help — that is the main axis. */
-.gv-point { display: flex; gap: 10px; align-items: flex-start; padding: 0 18px 10px; }
-.gv-point .pp { flex: 1; }
+.gv-point { padding: 0 18px 10px; }
 
 .gv-levels { display: flex; gap: 6px; padding: 0 18px 10px; }
 .gv-error { margin: 0 18px 12px; font-size: 12px; color: var(--accent); line-height: 1.5; }
@@ -3084,7 +3083,9 @@ button.hf-head:hover { background: var(--bg-hover); }
   color: var(--text); font: inherit; font-size: 12.5px;
 }
 .pp-path:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
-.pp-chosen { display: flex; gap: 8px; align-items: baseline; font-size: 11px; min-width: 0; }
+/* The action and the path it will act on, on one line under the choose row. */
+.pp-act-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; min-width: 0; }
+.pp-chosen { display: flex; gap: 8px; align-items: baseline; font-size: 11px; min-width: 0; flex: 1; }
 .pp-chosen-path { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pp-chosen-none { color: var(--text-faint); }
 .pp-link {

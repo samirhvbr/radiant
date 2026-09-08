@@ -16,7 +16,8 @@ import React, { useState } from 'react'
  * fallback rather than as the interface, and it says which machine it means.
  */
 export default function PathPicker ({
-  value = '', onChange, kind = 'folder', projects = [], placeholder = '/Users/you/Projects/something', label = 'Folder'
+  value = '', onChange, kind = 'folder', projects = [], placeholder = '/Users/you/Projects/something',
+  label = 'Folder', actions = null
 }) {
   const native = typeof window !== 'undefined' && window.radiantNative?.pickPath
   const [typing, setTyping] = useState(!native)
@@ -54,25 +55,33 @@ export default function PathPicker ({
         )}
       </div>
 
-      {native && !typing && (
-        <div className='pp-chosen'>
-          {value
-            ? <code className='pp-chosen-path' title={value}>{value}</code>
-            : <span className='pp-chosen-none'>Nothing chosen yet.</span>}
-          <button type='button' className='pp-link' onClick={() => setTyping(true)}>type it instead</button>
-        </div>
-      )}
-      {native && typing && (
-        <div className='pp-chosen'>
-          <span className='pp-chosen-none'>A full path on this Mac.</span>
-          <button type='button' className='pp-link' onClick={() => setTyping(false)}>use the picker</button>
-        </div>
-      )}
-      {!native && (
-        <div className='pp-chosen'>
-          <span className='pp-chosen-none'>A full path on the Mac running Radiant — not on this device.</span>
-        </div>
-      )}
+      {/* ⚠️ THE ACTION GOES UNDER THE CHOOSE BUTTONS, NOT BESIDE THEM. It sat out
+          on the right of the row, which reads as a separate thing rather than
+          the next step. Tony: "the Draw it Button should be under the Choose
+          buttons." It shares the row with what you chose, so the path you are
+          about to act on is right next to the button that acts on it. */}
+      <div className='pp-act-row'>
+        {actions}
+        {native && !typing && (
+          <div className='pp-chosen'>
+            {value
+              ? <code className='pp-chosen-path' title={value}>{value}</code>
+              : <span className='pp-chosen-none'>Nothing chosen yet.</span>}
+            <button type='button' className='pp-link' onClick={() => setTyping(true)}>type it instead</button>
+          </div>
+        )}
+        {native && typing && (
+          <div className='pp-chosen'>
+            <span className='pp-chosen-none'>A full path on this Mac.</span>
+            <button type='button' className='pp-link' onClick={() => setTyping(false)}>use the picker</button>
+          </div>
+        )}
+        {!native && (
+          <div className='pp-chosen'>
+            <span className='pp-chosen-none'>A full path on the Mac running Radiant — not on this device.</span>
+          </div>
+        )}
+      </div>
 
       {quick.length > 0 && (
         <div className='pp-quick'>
