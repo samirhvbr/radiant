@@ -1,0 +1,103 @@
+# Build the Linux AppImage and attach it to a release that already exists.
+#
+# ⚠️ THIS DOES NOT CHANGE HOW RADIANT IS RELEASED. `npm run release` still runs
+# on the Mac, still notarises, still uploads the dmg, the zip, latest-mac.yml and
+# the stable radiant.dmg, and still verifies the public download. This starts
+# AFTER that, when the release is published, and adds two files to it. Nothing
+# here can alter the Mac assets or the release notes, and if it fails the Mac
+# release is already out and unaffected.
+#
+# ⚠️ AND IT IS THE ONLY REASON A LINUX BUILD REACHES ANYONE. electron-builder
+# cannot cross-compile an AppImage from macOS, so without a Linux runner the
+# target in package.json produces an artefact that only ever exists on the
+# machine that ran it, and server/updater.js goes on finding no asset for a
+# Linux user. This is the missing half.
+name: Linux release
+
+on:
+  release:
+    types: [published]
+  # For rebuilding a tag by hand — a failed run, or a release cut before this
+  # workflow existed.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to attach the AppImage to (e.g. v0.7.8)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # node-pty ships prebuilds for darwin and win32 only, so on Linux it is
+      # compiled here. xvfb is for the smoke test below, not for the build.
+      - name: System build deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb
+
+      - run: npm ci
+
+      - run: npm run dist:linux
+
+      # ⚠️ A BUILD THAT EXITS 0 IS NOT A BUILD THAT RUNS. This is the Linux
+      # counterpart of scripts/test-smoke.mjs, which boots the built app and asks
+      # it a question — a gate that only checks the file exists would have passed
+      # for every packaging mistake made getting here, including a helper for the
+      # wrong architecture and a native module built against the wrong ABI.
+      - name: Smoke test the AppImage
+        run: |
+          set -euo pipefail
+          APP=$(ls release/Radiant-*.AppImage)
+          echo "booting $APP"
+          xvfb-run -a "$APP" --appimage-extract-and-run --no-sandbox > /tmp/smoke.log 2>&1 &
+          for i in $(seq 1 40); do
+            # a refused connection here is the app still starting, not a failure
+            if curl -fs http://127.0.0.1:5834/api/config > /tmp/config.json 2>/dev/null; then break; fi
+            sleep 2
+          done
+          if ! test -s /tmp/config.json; then
+            echo "the packaged app never answered on 5834"; tail -50 /tmp/smoke.log; exit 1
+          fi
+          node -e '
+            const c = require("/tmp/config.json")
+            if (!Array.isArray(c.providers) || !c.providers.length) throw new Error("no providers in the served config")
+            if (!c.serverHost) throw new Error("the served config has no serverHost")
+            console.log("the packaged app booted and answered")
+          '
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          # latest-linux.yml is what the in-app updater reads; without it the
+          # AppImage is downloadable and never updates itself.
+          gh release upload "$TAG" release/Radiant-*.AppImage release/latest-linux.yml --clobber
+
+      # The same check release.mjs makes for the dmg, for the same reason: HEAD
+      # returns 404 on GitHub's asset CDN even for a healthy asset, so this is a
+      # GET, and an asset nobody can fetch is not a release.
+      - name: Prove a stranger can download it
+        env:
+          TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          NAME=$(basename $(ls release/Radiant-*.AppImage))
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${NAME}"
+          for i in $(seq 1 6); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' -r 0-99 -L "$URL")
+            if [ "$CODE" = "200" ] || [ "$CODE" = "206" ]; then echo "✓ $URL downloads"; exit 0; fi
+            sleep 5
+          done
+          echo "✗ $URL does not download"; exit 1
