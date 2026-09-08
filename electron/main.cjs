@@ -280,12 +280,20 @@ ipcMain.on('rad:hud-open', (e, sessionId) => raise(sessionId))
 // renderer is the thing being throttled while Radiant sits in the background,
 // which is every case that matters here. See src/notify.js for when this fires.
 ipcMain.on('rad:notify', (e, { title, body, sessionId } = {}) => {
-  if (!Notification.isSupported()) return
+  // ⚠️ A NOTIFICATION CAN BE REFUSED, AND THE REFUSAL IS SILENT. Notification
+  // Center drops them when Radiant has not been allowed to post, during Focus,
+  // and for an app macOS does not consider registered — and `show()` returns
+  // normally in every one of those cases. Silence is the exact failure this
+  // whole change exists to end, so the Dock bounces instead: no permission, no
+  // settings, and it is still there when you come back to the machine.
+  const bounce = () => { try { app.dock?.bounce('informational') } catch {} }
+  if (!Notification.isSupported()) return bounce()
   try {
     const n = new Notification({ title: title || 'Radiant', body: body || '' })
     n.on('click', () => raise(sessionId))
+    n.on('failed', err => { console.warn('[radiant] notification refused:', err?.message || err); bounce() })
     n.show()
-  } catch (err) { console.warn('[radiant] notification failed:', err.message) }
+  } catch (err) { console.warn('[radiant] notification failed:', err.message); bounce() }
 })
 
 ipcMain.on('rad:hud-toggle', () => { toggleHud() })
