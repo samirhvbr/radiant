@@ -574,6 +574,16 @@ function DesktopApp () {
 
   return (
     <div className={'app' + (navOpen ? ' nav-open' : '')}>
+      {/* ⚠️ ONE STRIP, OUTSIDE THE VIEW SWITCH, SO A NEW TAB CANNOT SHIP WITHOUT
+          ONE. Only Chat ever had a draggable surface: its .topbar, plus a strip
+          on the welcome screen. Tasks never had one and nobody noticed; then
+          Loops and Graphs arrived and Tony lived on the Graph tab, where the
+          window simply could not be moved. "and now i cant grab the top bar
+          again. what the fuck!!!" — the third time this class has shipped.
+          Putting it here rather than in each view means the next tab inherits it
+          by existing. Safe to overlap .topbar: both are drag, and every control
+          is exempted by the blanket rule in styles.css. */}
+      <div className='app-drag' />
       <MotionBackground kind={config.settings.motionBg} />
       {/* Unbidden, once, after an update — see components/WhatsNew.jsx */}
       <WhatsNew />

@@ -2677,7 +2677,30 @@ button.hf-head:hover { background: var(--bg-hover); }
 .topbar,
 .brand,
 .right-tabs,
-.main-drag { -webkit-app-region: drag; }
+.main-drag,
+.app-drag { -webkit-app-region: drag; }
+
+/* ⚠️ THE STRIP EVERY SCREEN GETS. Rendered once in App.jsx, outside the view
+   switch, because per-view drag handles are how Tasks, Loops and Graphs all
+   shipped with no way to move the window. It sits below .float-toggle's z-index
+   so nothing paints over the window controls. */
+/* ⚠️ `.app > .app-drag`, NOT `.app-drag`. Line 329 sets `.app > *:not(.motion-bg)
+   { position: relative }`, which is more specific than a bare class — so a plain
+   `.app-drag { position: absolute }` lost, the strip became a flex child with no
+   content, and it rendered 0px wide. It was in the DOM, it computed
+   -webkit-app-region: drag, and it was exactly as useless as not being there. */
+.app > .app-drag { position: absolute; top: 0; left: 0; right: 0; height: 38px; z-index: 4; }
+
+/* ⚠️ NOTHING INTERACTIVE IS EVER DRAGGABLE. A drag region is a hit-testing
+   RECTANGLE, not a subtree: anything whose box lands inside one stops responding
+   to clicks, child or not, and z-index does not help because z-index orders
+   paint. That has now cost the HUD button, the panel button, and a whole
+   release. Exempting controls one selector at a time is a list somebody has to
+   remember to add to; this is the rule that cannot be forgotten. no-drag on a
+   control that sits outside every drag region does nothing at all, so the
+   blanket costs nothing. */
+button, a, input, select, textarea, label, summary,
+[role='button'], [contenteditable='true'] { -webkit-app-region: no-drag; }
 
 .topbar button, .topbar a, .topbar input, .topbar select, .topbar textarea,
 .topbar [role='button'], .topbar [data-tip],

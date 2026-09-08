@@ -14,6 +14,12 @@
  * swallows clicks, so a button inside one that is not exempted does not merely
  * fail to drag — it stops working altogether. Adding a control to any of these
  * bars without a no-drag rule breaks it, and this is what says so.
+ *
+ * ⚠️ AND IT VISITS EVERY TAB, WHICH IS THE HOLE THAT LET IT HAPPEN AGAIN. This
+ * only ever loaded the default screen — Chat — so it green-lit a build where
+ * Tasks, Loops and Graphs had no draggable surface at all. Tony, on the Graph
+ * tab: "and now i cant grab the top bar again. what the fuck!!!" A gate that
+ * checks one of four screens is a gate that reports on one of four screens.
  */
 import { chromium } from 'playwright-core'
 import { spawn } from 'node:child_process'
@@ -58,18 +64,36 @@ const region = sel => page.evaluate(s => {
 // ── the handles: every strip that touches the window's top edge ──────────────
 // .topbar appears only with a session open, .main-drag only without one, so at
 // least one of the two must always be present and draggable.
-const main = await Promise.all(['.topbar', '.main-drag'].map(region))
-ok('the main pane offers a drag handle (.topbar or .main-drag)', main.includes('drag'))
+const main = await Promise.all(['.topbar', '.main-drag', '.app-drag'].map(region))
+ok('the main pane offers a drag handle', main.includes('drag'))
 ok('the sidebar brand is a drag handle', await region('.brand') === 'drag')
 
-// ── the exemptions: nothing clickable may sit inside a drag region ───────────
-// ⚠️ A DRAG REGION IS A RECTANGLE, NOT A SUBTREE. The first version of this
-// check only walked descendants of each drag bar, so it missed .hud-open —
-// position:absolute at the top-right of the sidebar, landing inside .brand's
-// rect without being inside .brand. Anything INTERSECTING a drag rect is
-// swallowed, child or not, so intersection is what gets tested.
-const swallowed = await page.evaluate(() => {
-  const bars = ['.topbar', '.brand', '.right-tabs', '.main-drag']
+// ── every tab, not just the one that loads first ────────────────────────────
+const TABS = ['Chat', 'Task', 'Loop', 'Graph']
+// ⚠️ WHERE, NOT WHETHER. The first version of this asked "is anything on the
+// page draggable" — and the sidebar's .brand always is, on every tab, so it
+// answered yes for screens with nothing grabbable in the main pane at all. It
+// also counted an element that was in the DOM, computed drag, and rendered ZERO
+// PIXELS WIDE. What the user reaches for is the top of the window to the right
+// of the sidebar; that is what has to be measured.
+async function grabbable () {
+  return page.evaluate(() => {
+    const side = document.querySelector('.sidebar')
+    const left = side ? side.getBoundingClientRect().right : 0
+    return [...document.querySelectorAll('*')].some(el => {
+      if (getComputedStyle(el).getPropertyValue('-webkit-app-region') !== 'drag') return false
+      const r = el.getBoundingClientRect()
+      if (r.height < 8) return false
+      return r.right > left + 40 && r.top < 40      // reaches the main pane's top strip
+    })
+  })
+}
+// ⚠️ THE SWALLOW CHECK RUNS PER TAB TOO. It used to run once, on whichever
+// screen happened to be loaded — so a button swallowed on the Graph tab was
+// invisible to it for exactly the same reason the missing handle was.
+async function swallowedControls () {
+  return page.evaluate(() => {
+  const bars = ['.topbar', '.brand', '.right-tabs', '.main-drag', '.app-drag']
   const region = el => getComputedStyle(el).getPropertyValue('-webkit-app-region')
   const rect = el => el.getBoundingClientRect()
   const hits = (a, b) => !(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top)
@@ -87,8 +111,25 @@ const swallowed = await page.evaluate(() => {
     if (over) bad.push(`${el.tagName.toLowerCase()}.${el.className || '(no class)'} overlaps the drag region .${over.sel}`)
   }
   return bad
-})
-ok(`no control is swallowed by a drag region${swallowed.length ? ' — ' + swallowed.join(', ') : ''}`, swallowed.length === 0)
+  })
+}
+
+for (const tab of TABS) {
+  const btn = page.locator(`.sidebar-switch button:text-is("${tab}")`).first()
+  if (!(await btn.count())) { ok(`the ${tab} tab exists to be checked`, false); continue }
+  await btn.click()
+  await page.waitForTimeout(250)
+  ok(`the window can be dragged on the ${tab} tab`, await grabbable())
+  const bad = await swallowedControls()
+  ok(`no control is swallowed on the ${tab} tab${bad.length ? ' — ' + bad.slice(0, 3).join(', ') : ''}`, bad.length === 0)
+}
+
+// ── the exemptions: nothing clickable may sit inside a drag region ───────────
+// ⚠️ A DRAG REGION IS A RECTANGLE, NOT A SUBTREE. The first version of this
+// check only walked descendants of each drag bar, so it missed .hud-open —
+// position:absolute at the top-right of the sidebar, landing inside .brand's
+// rect without being inside .brand. Anything INTERSECTING a drag rect is
+// swallowed, child or not, so intersection is what gets tested.
 
 // ── and the HUD, which has no title bar of any kind ──────────────────────────
 // ⚠️ A FRESH PAGE, not page.goto with a different hash — same-document hash
