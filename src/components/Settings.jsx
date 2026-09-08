@@ -1665,11 +1665,23 @@ function AgentPane ({ config, onSettings }) {
               and point at the half that does work. */}
         {comp?.platform && comp.platform !== 'darwin' ? (
           <div className='comp-stat'>
-            <span className='fit-badge fit-no'>— Desktop control</span>
+            <span className={comp.accessibility && comp.screenRecording ? 'key-ok' : 'fit-badge fit-no'}>
+              {comp.accessibility && comp.screenRecording ? '✓' : '—'} Desktop control
+            </span>
+            {/* ⚠️ NAME WHAT IS ACTUALLY IN THE WAY. There are two different
+                problems here and only one of them can be fixed: a missing
+                package is an apt install away, and a Wayland session is not —
+                it refuses synthetic input by design, so telling someone to
+                install something would send them after a fix that does not
+                exist. The helper reports which it is. */}
             <span className='desc'>
-              not available on {comp.platform === 'linux' ? 'Linux' : 'this platform'} — Radiant
-              moves the mouse, types and captures the screen through a macOS helper, and there is
-              no equivalent here yet. Browser control above needs none of it and works.
+              {comp.reason === 'wayland'
+                ? 'this is a Wayland session, which refuses one app typing into another by design. Log in with the X11 (Xorg) session to use it. Browser control above works either way.'
+                : comp.reason === 'missing:xdotool' ? 'install xdotool (apt install xdotool) and reopen this pane.'
+                  : comp.reason === 'missing:imagemagick' ? 'install ImageMagick (apt install imagemagick) and reopen this pane.'
+                    : comp.reason?.startsWith('missing:') ? 'install xdotool and ImageMagick (apt install xdotool imagemagick) and reopen this pane.'
+                      : comp.accessibility && comp.screenRecording ? 'the agent can see the screen, click and type.'
+                        : 'not available — the helper for this platform did not answer.'}
             </span>
           </div>
         ) : (<>
