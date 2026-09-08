@@ -651,6 +651,7 @@ function DesktopApp () {
       <WhatsNew />
       <div className='nav-backdrop' onClick={() => setNavOpen(false)} />
       <Sidebar
+        platform={config?.platform}
         section={view}
         onSection={setView}
         onOpenAgents={() => { setAgentView('library'); setSettingsTab('agents'); setSettingsOpen(true) }}
@@ -738,6 +739,7 @@ function DesktopApp () {
       ) : (
       <Chat
         serverHost={config.serverHost}
+        platform={config.platform}
         skills={config.skills || []}
         onAddSkill={addSkillToChat}
         onRemoveSkill={removeSkillFromChat}

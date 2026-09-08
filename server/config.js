@@ -909,6 +909,12 @@ export function publicConfig (cfg) {
     // The UI needs to SEE what was removed, or the library cannot offer it back
     // and "Remove" becomes a one-way door.
     serverHost: serverHost(),
+    // ⚠️ THE PLATFORM OF THE MACHINE RUNNING THE SERVER, WHICH IS THE ONE BEING
+    // DESCRIBED. Everything the UI says about "this Mac" — where models download,
+    // which agents are connected, whose screen the agent drives — is about the
+    // server's machine, not the one holding the window. serverHost already
+    // travels for exactly that reason; this is the same fact, one field over.
+    platform: process.platform,
     removedAgents: cfg.removedAgents || [],
     // ⚠️ SEND THE WHOLE DEFINITION, NOT JUST THE ID. With only ids the library
     // had to invent what it showed: a generic robot for every one of them, and a
