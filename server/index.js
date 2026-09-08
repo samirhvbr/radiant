@@ -17,6 +17,7 @@ import { OAUTH_PROVIDERS, buildAuthUrl, completePaste, startLoopback, validAcces
 import { checkForUpdate } from './updater.js'
 import { ollamaBin, hermesBin, SPAWN_ENV } from './ollama.js'
 import { commandRisk } from './util.js'
+import { IS_MAC, openCommand, chromeBinary, tailscaleBinary, defaultShell, cpuName, osVersion as osProductVersion, computerName } from './platform.js'
 import { listFacts, addFacts, addFactManual, deleteFact, clearFacts, relevantFacts } from './memory.js'
 import { shouldReflect, reflectionPrompt, parseProposal, addSuggestion } from './skillsmith.js'
 import {
@@ -257,12 +258,7 @@ async function refreshRemoteUrl () {
  * internet. One word apart; only one of them is consented to.
  */
 function enableTailscaleServe (port) {
-  const bins = [
-    '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
-    '/usr/local/bin/tailscale',
-    '/opt/homebrew/bin/tailscale'
-  ]
-  const bin = bins.find(b => { try { fs.accessSync(b); return true } catch { return false } })
+  const bin = tailscaleBinary()
   if (!bin) return
   try {
     execFileSync(bin, ['serve', '--bg', String(port)], { timeout: 15000, stdio: 'ignore' })
@@ -930,10 +926,26 @@ app.get('/api/sync-targets', (req, res) => {
   // answer: setDataDir creates the folder and write-probes it, so a genuine
   // failure arrives as a specific error at the moment it happens, instead of
   // speculative advice on a screen where nothing has been attempted yet.
-  const CLOUD_DOCS = path.join(home, 'Library', 'Mobile Documents', 'com~apple~CloudDocs')
-  push('iCloud Drive', CLOUD_DOCS)
+  //
+  // ⚠️ ALL OF THAT IS ABOUT A MAC, AND ONLY HOLDS ON ONE. "A Mac's iCloud Drive
+  // is ALWAYS at this path" is the whole argument for offering it unverified,
+  // and off a Mac the premise is simply false — there is no iCloud Drive to
+  // create, so setDataDir could not produce the real answer that makes offering
+  // it safe. Offering it anywhere else is the failure this reasoning rejects,
+  // not an instance of it: an option that cannot work, presented as if it could.
+  if (IS_MAC) {
+    const CLOUD_DOCS = path.join(home, 'Library', 'Mobile Documents', 'com~apple~CloudDocs')
+    push('iCloud Drive', CLOUD_DOCS)
+  }
 
   addIfPresent('Dropbox', path.join(home, 'Dropbox'))
+  // Linux keeps synced folders straight in $HOME; there is no CloudStorage
+  // indirection, so these are the same clients under the names they install as.
+  if (!IS_MAC) {
+    addIfPresent('OneDrive', path.join(home, 'OneDrive'))
+    addIfPresent('Nextcloud', path.join(home, 'Nextcloud'))
+    addIfPresent('Google Drive', path.join(home, 'GoogleDrive'))
+  }
   try {
     for (const e of fs.readdirSync(path.join(home, 'Library', 'CloudStorage'))) {
       const dir = path.join(home, 'Library', 'CloudStorage', e)
@@ -1274,7 +1286,7 @@ async function claudeUsage (token) {
 app.post('/api/open', (req, res) => {
   const p = String(req.body?.path || '')
   if (!p || !fs.existsSync(p)) return res.status(400).json({ error: 'no such file' })
-  try { spawn('open', [p], { detached: true, stdio: 'ignore' }).unref(); res.json({ ok: true }) } catch (e) { res.status(500).json({ error: e.message }) }
+  try { spawn(openCommand(), [p], { detached: true, stdio: 'ignore' }).unref(); res.json({ ok: true }) } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
 // ---------- recipes (parameterized task templates) ----------
@@ -1572,7 +1584,12 @@ const OLLAMA = 'http://127.0.0.1:11434'
 // A dedicated --user-data-dir is the only way to get a debuggable Chrome, and it
 // has a happy consequence: a distinct profile means a SEPARATE instance, so his
 // own Chrome never has to close. He signs into this one once and it persists.
-const CHROME_APP = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+// ⚠️ RESOLVED ON EVERY CALL, NOT ONCE AT IMPORT. A constant read at module load
+// answers "not installed" forever to a user who installs Chrome while Radiant is
+// open, and the only way back is to quit the app — which is rule 12: a state the
+// user cannot act on. chromeBinary() also returns null rather than a path that
+// does not exist, so `installed` below is an answer and not a guess.
+const chromeApp = () => chromeBinary()
 const chromeProfile = () => path.join(RADIANT_DIR, 'chrome')
 
 // Dictation. A GET so it can be an EventSource, which reconnects on its own and,
@@ -1608,18 +1625,25 @@ app.get('/api/browser/status', async (req, res) => {
     mode,
     reachable: await chromeReachable(),
     profile: chromeProfile(),
-    installed: fs.existsSync(CHROME_APP)
+    installed: Boolean(chromeApp())
   })
 })
 
 app.post('/api/browser/enable', async (req, res) => {
   const { CDP_PORT, chromeReachable } = await import('./browser.js')
-  if (!fs.existsSync(CHROME_APP)) return res.status(400).json({ error: 'Google Chrome is not installed.' })
+  const bin = chromeApp()
+  if (!bin) {
+    return res.status(400).json({
+      error: IS_MAC
+        ? 'Google Chrome is not installed.'
+        : 'Neither Google Chrome nor Chromium was found. Install one, or use the Radiant extension instead — it drives the browser you already have.'
+    })
+  }
   try {
     fs.mkdirSync(chromeProfile(), { recursive: true })
     // Detached and not through `open`, so the flags are certain to arrive and this
     // window outlives the request.
-    const child = spawn(CHROME_APP, [
+    const child = spawn(bin, [
       `--remote-debugging-port=${CDP_PORT}`,
       `--user-data-dir=${chromeProfile()}`,
       '--no-first-run',
@@ -1638,10 +1662,8 @@ app.post('/api/browser/enable', async (req, res) => {
 })
 
 app.get('/api/system', (req, res) => {
-  let chip = os.cpus()[0]?.model || 'Unknown CPU'
-  try { chip = execSync('sysctl -n machdep.cpu.brand_string', { timeout: 2000 }).toString().trim() } catch {}
-  let osVersion = ''
-  try { osVersion = execSync('sw_vers -productVersion', { timeout: 2000 }).toString().trim() } catch {}
+  const chip = cpuName()
+  const osVersion = osProductVersion()
   // real free space on the volume that actually holds the models (follows the
   // ~/.ollama symlink if models live on an external drive) — the number a
   // download really gets, not Finder's purgeable-inflated figure.
@@ -1658,8 +1680,7 @@ app.get('/api/system', (req, res) => {
   // Mac", and downloads land here too — so a 30 GB pull started on a laptop
   // silently fills a Mac in another room. Tony, on where a model ends up:
   // "correct. thats what confused me."
-  let hostname = os.hostname().replace(/\.local$/, '')
-  try { hostname = execSync('scutil --get ComputerName', { timeout: 2000 }).toString().trim() || hostname } catch {}
+  const hostname = computerName()
   res.json({
     hostname,
     chip,
@@ -3296,7 +3317,7 @@ wss.on('connection', (ws, req) => {
     if (!SHARE_TOKEN || tok !== SHARE_TOKEN) { ws.close(1008, 'unauthorized'); return }
   }
   const cwd = url.searchParams.get('cwd') || os.homedir()
-  const shell = process.env.SHELL || '/bin/zsh'
+  const shell = defaultShell()
   let term
   try {
     term = pty.spawn(shell, ['-l'], {

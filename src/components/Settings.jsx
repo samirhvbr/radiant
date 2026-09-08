@@ -531,7 +531,11 @@ function ModelsPane ({ onModelsChanged, config, onSettings }) {
         <div className='spec-card'>
           <div className='spec-chip-name'>{system.chip}</div>
           <div className='spec-detail'>
-            {system.ramGB} GB unified memory · {system.cores} cores · macOS {system.osVersion}
+            {/* "unified memory" and "macOS" are both true only on a Mac. osVersion
+                already names itself off one ("Ubuntu 24.04.1 LTS"), so prefixing it
+                there would read "macOS Ubuntu 24.04.1 LTS". */}
+            {system.ramGB} GB {system.platform === 'darwin' ? 'unified memory' : 'memory'} · {system.cores} cores
+            · {system.platform === 'darwin' ? `macOS ${system.osVersion}` : system.osVersion}
             {system.diskFreeGB != null && <> · <span className={system.diskFreeGB < 20 ? 'fit-badge fit-tight' : ''}>{system.diskFreeGB} GB free on disk</span></>}
           </div>
           <div className='spec-note'>
