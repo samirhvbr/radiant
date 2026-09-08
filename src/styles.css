@@ -2106,8 +2106,22 @@ button.hf-head:hover { background: var(--bg-hover); }
 }
 
 .tb-cols { flex: 1; min-height: 0; display: flex; gap: 10px; padding: 0 18px 18px; overflow-x: auto; }
+/* ⚠️ THE COLUMNS SHRINK, THEY DO NOT SCROLL OFF. This was `flex: 1 0 210px` with
+   a matching min-width — grow 1, SHRINK 0 — so four columns held 210px each
+   whatever the window did, and .tb-cols' overflow-x took over: narrow the window
+   and Review slid off the right edge behind a horizontal scrollbar. A board you
+   have to scroll sideways to see is not a board; the whole point is taking in
+   every column at once.
+
+   Basis 0 with shrink 1 makes the columns always equal and always exactly the
+   width available. The floor is 110px, and it is set from the narrowest the
+   window can actually be: minWidth 900 (electron/main.cjs) less the fixed 248
+   sidebar leaves 652, less 36 of padding and 4 gaps of 10 leaves 576 across
+   FIVE columns — Queued, Working, Needs you, Review, Done — or 115 each. Count
+   the columns before changing this; 140 looked right for four and would have put
+   the scrollbar straight back at the minimum window size. */
 .tb-col {
-  flex: 1 0 210px; min-width: 210px; display: flex; flex-direction: column;
+  flex: 1 1 0; min-width: 110px; display: flex; flex-direction: column;
   border-radius: 12px; background: var(--bg-panel); padding: 10px;
   transition: background .15s ease, box-shadow .15s ease;
 }
@@ -2122,6 +2136,12 @@ button.hf-head:hover { background: var(--bg-hover); }
 .tb-card {
   border-radius: 10px; background: var(--bg-raised); padding: 9px 10px;
   cursor: pointer; border: 1px solid transparent;
+  /* A title is whatever the user typed, and a session is often named after a
+     path or a URL. One unbreakable token sets the card's min-content width and
+     shoves the column back past its floor, which is the horizontal scrollbar
+     returning by another route. Inherited, so it covers the model line and the
+     blocked-reason line too. */
+  overflow-wrap: anywhere;
 }
 .tb-card:hover { background: var(--bg-hover); }
 .tb-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
