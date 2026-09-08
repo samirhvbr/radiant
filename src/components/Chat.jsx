@@ -586,6 +586,7 @@ export function ModelPicker ({ session, models, onPick, onRefresh, placeholder, 
   return (
     <div ref={ref} style={{ display: 'contents' }}>
       <button
+        type='button'
         className='model-btn'
         aria-expanded={open}
         aria-haspopup='listbox'
@@ -606,6 +607,7 @@ export function ModelPicker ({ session, models, onPick, onRefresh, placeholder, 
           <div className='model-groups'>
             {clearLabel && !searching && (
               <button
+                type='button'
                 className={'model-option is-clear' + (session?.model ? '' : ' selected')}
                 onClick={() => { onPick(null); setOpen(false) }}
               >
@@ -620,6 +622,7 @@ export function ModelPicker ({ session, models, onPick, onRefresh, placeholder, 
                 </div>
                 {pinned.map(m => (
                   <button
+                    type='button'
                     key={'pin' + pinId(m)}
                     className={'model-option' + (m.id === session?.model && m.provider === session?.provider ? ' selected' : '')}
                     onClick={() => { onPick(m); setOpen(false) }}
@@ -635,13 +638,14 @@ export function ModelPicker ({ session, models, onPick, onRefresh, placeholder, 
               const col = isCollapsed(g)
               return (
                 <div key={g}>
-                  <button className='model-group-label' onClick={() => toggleGroup(g)}>
+                  <button type='button' className='model-group-label' onClick={() => toggleGroup(g)}>
                     <span className='mg-caret'>{col ? '▸' : '▾'}</span>
                     <span className='mg-name'>{g}</span>
                     <span className='mg-count'>{ms.length}</span>
                   </button>
                   {!col && ms.map(m => (
                     <button
+                      type='button'
                       key={m.provider + m.id}
                       className={'model-option' + (m.id === session?.model && m.provider === session?.provider ? ' selected' : '')}
                       onClick={() => { onPick(m); setOpen(false) }}

@@ -2348,8 +2348,15 @@ app.post('/api/graph/scan', (req, res) => {
   try { st = fs.statSync(dir) } catch { return res.status(404).json({ error: `There is nothing at ${dir}.` }) }
   // Pointing at a file is a reasonable thing to do by accident; read its folder.
   const root = st.isDirectory() ? dir : path.dirname(dir)
+  // ⚠️ ONLY THE FILESYSTEM KNOWS WHETHER THAT WAS A FILE. The client guessed by
+  // looking for a dot in the name, and Tony's own Google Drive folder is called
+  // "GoogleDrive-tony@templetongroup.ai" — so choosing a folder switched the view
+  // to file level. A folder is allowed a dot in its name; this end has already
+  // stat'ed the path, so it answers instead of guessing.
+  const asked = req.body?.level
+  const level = asked === 'file' || asked === 'folder' ? asked : (st.isDirectory() ? 'folder' : 'file')
   try {
-    res.json(scanRepo(root, { level: req.body?.level === 'file' ? 'file' : 'folder' }))
+    res.json(scanRepo(root, { level }))
   } catch (e) {
     res.status(500).json({ error: `Could not read that folder: ${e.message}` })
   }

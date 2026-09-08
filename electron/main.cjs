@@ -51,6 +51,22 @@ ipcMain.handle('rad:pick-folder', async (e, current, title) => {
   return res.canceled || !res.filePaths?.length ? null : res.filePaths[0]
 })
 
+// ⚠️ TYPING A PATH IS NOT A USER INTERFACE. The Graph view shipped with a bare
+// text field and nothing else, which is fine if you already know the path and
+// useless otherwise. Tony: "are we expecting users to type in a folder/file
+// path? this is not user friendly at all." macOS lets one dialog accept either
+// a file or a folder, so this is the same handler with the properties passed in.
+ipcMain.handle('rad:pick-path', async (e, { current, title, kind } = {}) => {
+  const parent = BrowserWindow.fromWebContents(e.sender) || win || undefined
+  const properties = kind === 'file' ? ['openFile'] : ['openDirectory', 'createDirectory']
+  const res = await dialog.showOpenDialog(parent, {
+    title: title || (kind === 'file' ? 'Choose a file' : 'Choose a folder'),
+    properties,
+    defaultPath: current || undefined
+  })
+  return res.canceled || !res.filePaths?.length ? null : res.filePaths[0]
+})
+
 // Save a file the user asked for, with a real Save dialog.
 //
 // ⚠️ NOT AN <a download>. That leans on Electron's default download handling,

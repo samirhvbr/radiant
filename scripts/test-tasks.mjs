@@ -37,6 +37,27 @@ const j = async (m, p, b) => {
   return { status: r.status, body: await r.json().catch(() => null) }
 }
 
+
+// ⚠️ SPLITTING ON THE AT-RULE IS NOT READING A BLOCK. Cutting the stylesheet at
+// every "@media (prefers-reduced-motion" leaves each piece running to the NEXT
+// one, so a segment swallows all the ordinary CSS after its own closing brace —
+// and a search for .hud-dot then matches a block that does not contain it. This
+// counts braces, which is the only way to know where a block ends.
+function reducedMotionBlocks (css) {
+  const out = []
+  const needle = '@media (prefers-reduced-motion'
+  for (let i = css.indexOf(needle); i !== -1; i = css.indexOf(needle, i + 1)) {
+    const open = css.indexOf('{', i)
+    if (open === -1) continue
+    let depth = 0
+    for (let j = open; j < css.length; j++) {
+      if (css[j] === '{') depth++
+      else if (css[j] === '}' && --depth === 0) { out.push(css.slice(open, j + 1)); break }
+    }
+  }
+  return out
+}
+
 // create
 const made = await j('POST', '/api/tasks', { title: 'Board smoke test', detail: 'do a thing', model: 'gpt-x' })
 ok('a task can be created', made.status === 200 && made.body?.id, JSON.stringify(made.body))
@@ -127,6 +148,40 @@ ok('it can be deleted', !gone.body.some(t => t.id === id))
      /\.tb-who-pick \.model-menu \{[^}]*position: absolute/s.test(css))
 }
 
+
+// ── a picker inside a form must not submit it ───────────────────────────────
+// ⚠️ A <button> WITH NO type IS A SUBMIT BUTTON. ModelPicker's five buttons had
+// no type, and it is rendered inside the New task <form> — so clicking "Pick a
+// model" submitted the form and created the task there and then, before you had
+// picked anything. Measured in the running app: one click, one task called
+// whatever was half-typed in the title. The loop composer has two of these, so
+// it inherited the same bug the day it was written.
+{
+  const fs = await import('node:fs')
+  const chat = fs.readFileSync('src/components/Chat.jsx', 'utf8')
+  const start = chat.indexOf('export function ModelPicker')
+  const block = start === -1 ? '' : chat.slice(start, start + 6000)
+  const buttons = block.split('<button').slice(1)
+  ok('ModelPicker has buttons to check', buttons.length >= 5, String(buttons.length))
+  ok('every button in the model picker declares type="button"',
+     buttons.every(b => /^[^>]*type='button'/.test(b)),
+     buttons.filter(b => !/^[^>]*type='button'/.test(b)).length + ' without a type')
+  // The two places it is rendered inside a form.
+  const board = fs.readFileSync('src/components/TaskBoard.jsx', 'utf8')
+  ok('the task composer really is a form (so the above matters)',
+     /<form className='tb-compose'/.test(board) && /<ModelPicker/.test(board))
+
+  // ⚠️ AND THE SAME CLASS OF BUG, ONE LEVEL SUBTLER. The loop walkthrough had a
+  // Next button and a submit button swapped by a ternary in the same slot, so
+  // React reused the DOM node: the click landed on Next, the handler advanced
+  // the stage, React flipped THAT ELEMENT's type to "submit", and the browser
+  // then ran the submit default action. Pressing Next on the steps skipped the
+  // review and created the loop. One button, always type='button'.
+  const lb = fs.readFileSync('src/components/LoopBoard.jsx', 'utf8')
+  ok('the walkthrough has no submit button to swap in', !/type='submit'/.test(lb))
+  ok('and its one advance button always declares type="button"',
+     /onClick=\{advance\}/.test(lb) && /type='button'\n\s+className='rx-btn rx-btn-go'/.test(lb))
+}
 
 // ── steering ────────────────────────────────────────────────────────────────
 // Tony: "we should have a steer option next to the Queued text so an agent can
@@ -229,8 +284,13 @@ ok('it can be deleted', !gone.body.some(t => t.id === id))
   // is DEFINED above, so looking for its name inside the guard fails on correct
   // code. Third time today a regex over source has done that.
   {
-    const at = css.lastIndexOf('prefers-reduced-motion')
-    const body = at === -1 ? '' : css.slice(at, at + 400)
+    // ⚠️ FIND THE BLOCK BY WHAT IS IN IT, NOT BY BEING LAST. This took
+    // lastIndexOf and broke the moment any new reduce-motion rule was appended
+    // to the stylesheet — it was then reading a stranger's block and reporting
+    // the HUD's motion as unguarded. That is the same positional assumption the
+    // comment above warns about, one line up. There are two dozen of these
+    // blocks; the one that matters here is whichever one names .hud-dot.
+    const body = reducedMotionBlocks(css).find(b => b.includes('.hud-dot')) || ''
     ok('every moving part is dropped under Reduce Motion',
        /\.hud-dot \{[^}]*animation:\s*none/.test(body) && /transform:\s*none/.test(body))
   }

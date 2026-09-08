@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api.js'
 import { ModelPicker } from './Chat.jsx'
+import LoopDiagram from './LoopDiagram.jsx'
+import PathPicker from './PathPicker.jsx'
 
 /**
  * A loop: one goal, several steps, and a check on each.
@@ -34,6 +36,14 @@ const LOOP_LOOK = {
   failed: 'Stopped — a step could not pass its check',
   done: 'Finished'
 }
+
+// Three stages, and the order is the argument: what you want, how it breaks up,
+// and then a chance to read it back before anything exists.
+const STAGES = [
+  { id: 'goal', label: 'The goal' },
+  { id: 'steps', label: 'The steps' },
+  { id: 'review', label: 'Check it over' }
+]
 
 const blankStep = () => ({ title: '', prompt: '', check: '', agentId: null, model: null, provider: null, checkAgentId: null, maxAttempts: 3 })
 
@@ -92,7 +102,7 @@ function StepEditor ({ step, index, agents, pickable, onChange, onRemove, onRefr
     <div className='lp-edit'>
       <div className='lp-edit-head'>
         <span className='lp-edit-n'>Step {index + 1}</span>
-        {canRemove && <button className='lp-mini lp-mini-quiet' onClick={() => onRemove()} aria-label={`Remove step ${index + 1}`}>Remove</button>}
+        {canRemove && <button type='button' className='lp-mini lp-mini-quiet' onClick={() => onRemove()} aria-label={`Remove step ${index + 1}`}>Remove</button>}
       </div>
       <input
         className='lp-input'
@@ -109,13 +119,23 @@ function StepEditor ({ step, index, agents, pickable, onChange, onRemove, onRefr
         aria-label={`Step ${index + 1} detail`}
         rows={2}
       />
-      <input
-        className='lp-input lp-check-input'
-        placeholder='This step passes when… (e.g. npm test exits 0 and the new file is committed)'
-        value={step.check}
-        onChange={e => set({ check: e.target.value })}
-        aria-label={`Step ${index + 1} check`}
-      />
+      <label className='lp-field'>
+        <span className='lp-field-label'>This step passes when…</span>
+        <input
+          className='lp-input lp-check-input'
+          placeholder='e.g. npm test exits 0 and src/export.js exists'
+          value={step.check}
+          onChange={e => set({ check: e.target.value })}
+          aria-label={`Step ${index + 1} check`}
+        />
+        {/* The single most useful sentence in this whole feature, so it is next to
+            the box rather than in a Read me nobody has open. */}
+        <span className='lp-field-hint'>
+          {step.check.trim()
+            ? 'Name something checkable — a command that exits 0, a file that exists. "It looks right" is an opinion, and an opinion is what a loop exists to replace.'
+            : 'Leave it empty and this step is done the moment the agent stops talking. Nothing will verify it.'}
+        </span>
+      </label>
       <div className='lp-edit-foot'>
         <label className='lp-pick'>
           <span>Does it</span>
@@ -164,6 +184,13 @@ export default function LoopBoard ({
   const [composing, setComposing] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [draft, setDraft] = useState({ title: '', detail: '', cwd: '', steps: [blankStep()] })
+  // ⚠️ ONE QUESTION AT A TIME. The first version put the goal, the folder, every
+  // step, every model and every check on one screen — which is a form, not an
+  // explanation, and a loop is a new idea that needs one. Tony asked for a
+  // walkthrough. The stages are also where the guidance lives: the sentence about
+  // what makes a good check belongs beside the box you type it in, not in a
+  // Read me nobody has open.
+  const [stage, setStage] = useState(0)
   const titleRef = useRef(null)
 
   const refresh = useCallback(async () => {
@@ -177,7 +204,7 @@ export default function LoopBoard ({
     const t = setInterval(refresh, 4000)
     return () => clearInterval(t)
   }, [refresh])
-  useEffect(() => { if (composing) titleRef.current?.focus() }, [composing])
+  useEffect(() => { if (composing && stage === 0) titleRef.current?.focus() }, [composing, stage])
 
   const pickable = useMemo(() => [
     ...agents.map(a => ({ id: a.name, provider: 'agent', providerName: 'Agents', agentId: a.id })),
@@ -187,12 +214,15 @@ export default function LoopBoard ({
   const startDraft = () => {
     setDraft({ title: '', detail: '', cwd: defaultCwd || '', steps: [blankStep()] })
     setEditingId(null)
+    setStage(0)
     setComposing(true)
   }
 
   const editLoop = loop => {
     setDraft({ title: loop.title, detail: loop.detail || '', cwd: loop.cwd || '', steps: loop.steps.map(s => ({ ...s })) })
     setEditingId(loop.id)
+    // Editing an existing loop starts on the steps: you know what it is for.
+    setStage(1)
     setComposing(true)
   }
 
@@ -218,6 +248,15 @@ export default function LoopBoard ({
   const removeStep = i => setDraft(d => ({ ...d, steps: d.steps.filter((_, j) => j !== i) }))
 
   const uncheckedSteps = draft.steps.filter(s => s.title.trim() && !s.check.trim()).length
+  // ⚠️ NEXT IS DISABLED, NOT SILENTLY BROKEN. A walkthrough that lets you past a
+  // stage you have not filled in and then refuses at the end is worse than a form.
+  const stageReady = stage === 0 ? Boolean(draft.title.trim()) : draft.steps.some(s => s.title.trim())
+  // Next, Create, and Enter in a field are all the same move.
+  const advance = () => {
+    if (!stageReady) return
+    if (stage < STAGES.length - 1) setStage(n => n + 1)
+    else saveDraft()
+  }
 
   return (
     <section className='lp' aria-label='Loops'>
@@ -230,63 +269,145 @@ export default function LoopBoard ({
             a loop waits at an approval prompt like anything else does.
           </p>
         </div>
-        <button className='lp-new' onClick={() => (composing ? setComposing(false) : startDraft())}>
+        <button className='rx-btn rx-btn-go' onClick={() => (composing ? setComposing(false) : startDraft())}>
           {composing ? 'Cancel' : 'New loop'}
         </button>
       </header>
 
-      {composing && (
-        <form className='lp-compose' onSubmit={saveDraft}>
-          <input
-            ref={titleRef}
-            className='lp-input lp-input-lead'
-            placeholder='What are you building?'
-            value={draft.title}
-            onChange={e => setDraft(d => ({ ...d, title: e.target.value }))}
-            aria-label='Loop goal'
-          />
-          <textarea
-            className='lp-input lp-area'
-            placeholder='Context every step should have (optional)'
-            value={draft.detail}
-            onChange={e => setDraft(d => ({ ...d, detail: e.target.value }))}
-            aria-label='Loop detail'
-            rows={2}
-          />
-          <input
-            className='lp-input'
-            placeholder='Folder to work in'
-            value={draft.cwd}
-            onChange={e => setDraft(d => ({ ...d, cwd: e.target.value }))}
-            aria-label='Working folder'
-            spellCheck={false}
-          />
+      {/* ⚠️ REFERENCE, NOT DECORATION — so it goes away once you are working. It
+          is here because "loop" is a word people think they already know; the
+          picture is what makes the difference from a task list land. */}
+      {!composing && <LoopDiagram />}
 
-          {draft.steps.map((s, i) => (
-            <StepEditor
-              key={s.id || i}
-              step={s}
-              index={i}
-              agents={agents}
-              pickable={pickable}
-              canRemove={draft.steps.length > 1}
-              onChange={next => setStep(i, next)}
-              onRemove={() => removeStep(i)}
-              onRefreshModels={onRefreshModels}
-            />
-          ))}
+      {composing && (
+        <form className='lp-compose' onSubmit={e => { e.preventDefault(); advance() }}>
+          {/* Where you are, and how much is left. Three stages, always three. */}
+          <ol className='lp-stages'>
+            {STAGES.map((st, i) => (
+              <li key={st.id} className={'lp-stage' + (i === stage ? ' on' : '') + (i < stage ? ' done' : '')}>
+                <span className='lp-stage-n'>{i + 1}</span>
+                <span className='lp-stage-label'>{st.label}</span>
+              </li>
+            ))}
+          </ol>
+
+          {stage === 0 && (
+            <div className='lp-panel'>
+              <h3 className='lp-panel-title'>What are you building?</h3>
+              <p className='lp-panel-lead'>
+                One sentence, the way you would say it to a person. The steps come next.
+              </p>
+              <input
+                ref={titleRef}
+                className='lp-input lp-input-lead'
+                placeholder='e.g. Add CSV export to the reports page'
+                value={draft.title}
+                onChange={e => setDraft(d => ({ ...d, title: e.target.value }))}
+                aria-label='Loop goal'
+              />
+              <label className='lp-field'>
+                <span className='lp-field-label'>Anything every step should know <i>(optional)</i></span>
+                <textarea
+                  className='lp-input lp-area'
+                  placeholder='e.g. The reports live in src/reports. Do not touch the API.'
+                  value={draft.detail}
+                  onChange={e => setDraft(d => ({ ...d, detail: e.target.value }))}
+                  aria-label='Loop detail'
+                  rows={2}
+                />
+              </label>
+              <label className='lp-field'>
+                <span className='lp-field-label'>Which folder should it work in?</span>
+                <PathPicker
+                  value={draft.cwd}
+                  onChange={cwd => setDraft(d => ({ ...d, cwd }))}
+                  projects={projects}
+                  label='Working folder'
+                />
+              </label>
+            </div>
+          )}
+
+          {stage === 1 && (
+            <div className='lp-panel'>
+              <h3 className='lp-panel-title'>Break it into steps</h3>
+              <p className='lp-panel-lead'>
+                Each step is one job, run in its own conversation, in order. Give every
+                step a condition it has to meet — that is what makes this a loop and
+                not a list.
+              </p>
+              {draft.steps.map((st, i) => (
+                <StepEditor
+                  key={st.id || i}
+                  step={st}
+                  index={i}
+                  agents={agents}
+                  pickable={pickable}
+                  canRemove={draft.steps.length > 1}
+                  onChange={next => setStep(i, next)}
+                  onRemove={() => removeStep(i)}
+                  onRefreshModels={onRefreshModels}
+                />
+              ))}
+              <button type='button' className='rx-btn rx-btn-sm' onClick={addStep}>+ Add another step</button>
+            </div>
+          )}
+
+          {stage === 2 && (
+            <div className='lp-panel'>
+              <h3 className='lp-panel-title'>Here is what will run</h3>
+              <p className='lp-panel-lead'>
+                Read it once. Nothing has happened yet — creating a loop does not start it.
+              </p>
+              <div className='lp-review'>
+                <div className='lp-review-goal'>{draft.title || 'Untitled'}</div>
+                {draft.cwd && <div className='lp-review-cwd'>in <code>{draft.cwd}</code></div>}
+                <ol className='lp-review-steps'>
+                  {draft.steps.filter(st => st.title.trim()).map((st, i) => (
+                    <li key={st.id || i}>
+                      <b>{st.title}</b>
+                      <span className='lp-review-who'>{whoLabel(st, agents)}</span>
+                      {st.check.trim()
+                        ? <span className='lp-review-check'>Passes when {st.check} · up to {st.maxAttempts} attempt{st.maxAttempts === 1 ? '' : 's'}</span>
+                        : <span className='lp-review-nocheck'>No check — done the moment the agent stops. Nothing verifies it.</span>}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+              {uncheckedSteps > 0 && (
+                <p className='lp-warn'>
+                  {uncheckedSteps} step{uncheckedSteps === 1 ? '' : 's'} without a check. You can create it anyway —
+                  it just means {uncheckedSteps === 1 ? 'that step is' : 'those steps are'} taken on trust.
+                </p>
+              )}
+              <p className='lp-panel-lead'>
+                When you run it, each step opens as an ordinary chat you can watch, interrupt
+                and steer — so a loop waits at an approval prompt exactly like anything else.
+              </p>
+            </div>
+          )}
 
           <div className='lp-compose-foot'>
-            <button type='button' className='lp-mini' onClick={addStep}>+ Add step</button>
-            {uncheckedSteps > 0 && (
-              <span className='lp-warn'>
-                {uncheckedSteps} step{uncheckedSteps === 1 ? '' : 's'} with no check — {uncheckedSteps === 1 ? 'it' : 'they'} will
-                be treated as done the moment the agent stops.
-              </span>
-            )}
-            <button className='lp-save' type='submit' disabled={!draft.title.trim() || !draft.steps.some(s => s.title.trim())}>
-              {editingId ? 'Save changes' : 'Create loop'}
-            </button>
+            <button
+              type='button'
+              className='rx-btn rx-btn-sm'
+              onClick={() => (stage === 0 ? setComposing(false) : setStage(n => n - 1))}
+            >{stage === 0 ? 'Cancel' : 'Back'}</button>
+            {/* ⚠️ ONE BUTTON, ALWAYS type='button'. This was a Next button and a
+                submit button swapped by a ternary — and React reuses the DOM node
+                for both, because they sit in the same place in the same children
+                array. So the click landed on Next, the handler advanced the stage,
+                React flipped that very element's type to "submit" before the
+                browser got to the default action, and the browser then submitted
+                the form. Clicking Next on the steps skipped the review entirely
+                and created the loop. Watched twice before the cause was found: the
+                element you pressed is not necessarily the element that acts. */}
+            <button
+              type='button'
+              className='rx-btn rx-btn-go'
+              disabled={!stageReady}
+              onClick={advance}
+            >{stage < STAGES.length - 1 ? 'Next' : editingId ? 'Save changes' : 'Create loop'}</button>
           </div>
         </form>
       )}
@@ -320,12 +441,12 @@ export default function LoopBoard ({
                 </div>
                 <div className='lp-card-acts'>
                   {isRunning
-                    ? <button className='lp-mini' onClick={() => onStop?.(loop)}>Stop</button>
-                    : <button className='lp-mini lp-mini-go' onClick={() => onRun?.(loop)}>
+                    ? <button className='rx-btn rx-btn-sm' onClick={() => onStop?.(loop)}>Stop</button>
+                    : <button className='rx-btn rx-btn-sm rx-btn-go' onClick={() => onRun?.(loop)}>
                         {loop.state === 'done' || loop.state === 'failed' ? 'Run again' : 'Run'}
                       </button>}
-                  <button className='lp-mini' onClick={() => editLoop(loop)} disabled={isRunning}>Edit</button>
-                  <button className='lp-mini lp-mini-quiet' onClick={() => remove(loop)} aria-label={`Delete ${loop.title}`}>Delete</button>
+                  <button className='rx-btn rx-btn-sm' onClick={() => editLoop(loop)} disabled={isRunning}>Edit</button>
+                  <button className='rx-btn rx-btn-sm' onClick={() => remove(loop)} aria-label={`Delete ${loop.title}`}>Delete</button>
                 </div>
               </header>
 

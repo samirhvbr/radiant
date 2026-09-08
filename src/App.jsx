@@ -614,6 +614,7 @@ function DesktopApp () {
         <GraphView
           defaultPath={session?.cwd || config.settings.defaultCwd || ''}
           mode={config.settings.mode}
+          projects={projects}
           onError={setError}
           onExplain={async text => {
             // A scan is a fact; what it means is a conversation. Hand the real

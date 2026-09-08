@@ -2569,7 +2569,7 @@ button.hf-head:hover { background: var(--bg-hover); }
 @media (prefers-reduced-motion: reduce) {
   .small-btn, .tb-mini, .pill-toggle, .tmpl-card, .agent-card, .model-option,
   .tb-card, .sidebar-switch button, .tmpl-restore-all,
-  .sidebar-switch::before, .dev-card { transition: none; }
+  .sidebar-switch::before, .dev-card, .rx-btn { transition: none; }
   .small-btn:active, .tb-mini:active, .pill-toggle:active, .sidebar-switch button:active,
   .tmpl-restore-all:active, .tmpl-card:active, .agent-card:active, .model-option:active,
   .tmpl-card:hover, .agent-card:hover { transform: none; }
@@ -2990,27 +2990,17 @@ button.hf-head:hover { background: var(--bg-hover); }
    The drawing gets the room; everything measured about it sits in a column
    beside it, because the numbers are what you check the picture against. */
 .gv { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
-.gv-head { display: flex; align-items: center; gap: 12px; padding: 14px 18px 8px; }
-.gv-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); flex: none; }
-.gv-point { flex: 1; display: flex; gap: 8px; min-width: 0; }
-.gv-path {
-  flex: 1; min-width: 0; padding: 7px 10px; border-radius: 8px;
-  border: 1px solid var(--bg-hover); background: var(--bg-input);
-  color: var(--text); font: inherit; font-size: 12.5px;
-}
-.gv-path:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
-.gv-draw {
-  flex: none; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--accent);
-  background: var(--accent); color: var(--on-accent); font: inherit; font-size: 12px; cursor: pointer;
-}
-.gv-draw:disabled { opacity: .45; cursor: default; }
+.gv-head { display: flex; align-items: flex-start; gap: 12px; padding: 14px 18px 10px; }
+.gv-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
+.gv-sub { margin: 3px 0 0; font-size: 12px; color: var(--text-muted); line-height: 1.55; max-width: 74ch; }
+/* ⚠️ align-items: flex-start, OR THE BUTTON GROWS TO THE PICKER'S HEIGHT. A flex
+   row stretches its children by default, and the picker is three rows tall, so
+   "Draw it" rendered as a 250px slab of accent colour down the middle of the
+   screen. flex:none on the button does not help — that is the main axis. */
+.gv-point { display: flex; gap: 10px; align-items: flex-start; padding: 0 18px 10px; }
+.gv-point .pp { flex: 1; }
 
-.gv-levels { display: flex; gap: 4px; padding: 0 18px 10px; }
-.gv-level {
-  padding: 4px 10px; border-radius: 7px; border: 1px solid var(--line, transparent);
-  background: var(--bg-raised); color: var(--text-muted); font: inherit; font-size: 11.5px; cursor: pointer;
-}
-.gv-level.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.gv-levels { display: flex; gap: 6px; padding: 0 18px 10px; }
 .gv-error { margin: 0 18px 12px; font-size: 12px; color: var(--accent); line-height: 1.5; }
 
 .gv-blank { padding: 4px 18px 20px; max-width: 58ch; }
@@ -3061,3 +3051,111 @@ button.hf-head:hover { background: var(--bg-hover); }
   .gv-side { width: auto; flex: none; }
   .gv-acts { margin-top: 0; }
 }
+
+/* ── one button size ────────────────────────────────────────────────────────
+   ⚠️ SAME JOB, SAME SIZE. Choose folder, Draw it, Folders, Files, Explain this
+   and Save SVG were six different widths and three different paddings, because
+   each arrived with the block it was written in. Tony: "Buttons should also all
+   be the same size." min-width does it without forcing a long label to truncate.
+   .rx-btn-sm is the smaller scale for actions inside a card; the two sizes are
+   deliberate, everything within a row shares one. */
+.rx-btn {
+  min-width: 132px; padding: 8px 14px; border-radius: 8px;
+  border: 1px solid var(--line, transparent); background: var(--bg-raised);
+  color: var(--text); font: inherit; font-size: 12.5px; line-height: 1.2;
+  text-align: center; cursor: pointer; flex: none;
+  transition: background .15s ease, border-color .15s ease;
+}
+.rx-btn:hover:not(:disabled) { background: var(--bg-hover); }
+.rx-btn:disabled { opacity: .45; cursor: default; }
+.rx-btn-go { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.rx-btn-sm { min-width: 96px; padding: 5px 10px; font-size: 11.5px; }
+.rx-btn-seg { min-width: 96px; padding: 5px 10px; font-size: 11.5px; color: var(--text-muted); }
+.rx-btn-seg.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+
+/* ── choosing a folder ──────────────────────────────────────────────────────
+   The picker is the interface; the text field is the fallback for a browser,
+   where a native dialog would return a path from the wrong machine. */
+.pp { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pp-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pp-path {
+  flex: 1; min-width: 220px; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--bg-hover); background: var(--bg-input);
+  color: var(--text); font: inherit; font-size: 12.5px;
+}
+.pp-path:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.pp-chosen { display: flex; gap: 8px; align-items: baseline; font-size: 11px; min-width: 0; }
+.pp-chosen-path { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-chosen-none { color: var(--text-faint); }
+.pp-link {
+  border: none; background: none; padding: 0; flex: none;
+  color: var(--text-faint); font: inherit; font-size: 11px;
+  text-decoration: underline; cursor: pointer;
+}
+.pp-link:hover { color: var(--text); }
+.pp-quick { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.pp-quick-lead { font-size: 11px; color: var(--text-faint); }
+.pp-chip {
+  padding: 3px 9px; border-radius: 20px; border: 1px solid var(--bg-hover);
+  background: var(--bg-input); color: var(--text-muted);
+  font: inherit; font-size: 11px; cursor: pointer;
+}
+.pp-chip:hover { color: var(--text); }
+.pp-chip.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+
+/* ── the loop reference card ───────────────────────────────────────────────
+   Adapted from the "4 Layers of an Agent System" poster, in the app's own
+   colours rather than its five neons: currentColor throughout, so it is right
+   in light, medium and dark without three copies. */
+.lp-fig {
+  margin: 0 18px 14px; padding: 14px 16px;
+  border-radius: 14px; background: var(--bg-panel);
+  display: flex; gap: 20px; align-items: center; flex-wrap: wrap;
+}
+.lp-fig-svg { flex: 1 1 330px; min-width: 300px; max-width: 430px; height: auto; color: var(--text-muted); }
+.lp-fig-arc { fill: none; stroke: currentColor; stroke-width: 1.3; }
+.lp-fig-again { fill: none; stroke: currentColor; stroke-width: 1.2; opacity: .45; }
+.lp-fig-node circle { fill: var(--bg-input); stroke: currentColor; stroke-width: 1.2; }
+.lp-fig-icon { fill: none; stroke: var(--text); stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.lp-fig-icon-dot { fill: var(--text); stroke: none; }
+.lp-fig-label { fill: var(--text); font-size: 11.5px; font-weight: 600; }
+.lp-fig-side { fill: var(--text-faint); font-size: 10px; }
+.lp-fig-notes { flex: 1 1 260px; display: flex; flex-direction: column; gap: 7px; min-width: 250px; }
+.lp-fig-notes > div { display: flex; gap: 8px; font-size: 11.5px; line-height: 1.5; }
+.lp-fig-notes b { flex: none; width: 62px; color: var(--text); font-weight: 600; }
+.lp-fig-notes span { color: var(--text-muted); }
+
+/* ── the walkthrough ───────────────────────────────────────────────────────── */
+.lp-stages { list-style: none; display: flex; gap: 8px; margin: 0 0 4px; padding: 0; flex-wrap: wrap; }
+.lp-stage { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-faint); }
+.lp-stage + .lp-stage::before { content: ''; width: 14px; height: 1px; background: var(--bg-hover); margin-right: 6px; }
+.lp-stage-n {
+  width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--bg-input); color: var(--text-faint); font-size: 10.5px; font-weight: 600;
+}
+.lp-stage.on .lp-stage-n, .lp-stage.done .lp-stage-n { background: var(--accent); color: var(--on-accent); }
+.lp-stage.on .lp-stage-label { color: var(--text); }
+.lp-panel { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 14px; background: var(--bg-panel); }
+/* ⚠️ A COLUMN FLEX PARENT STRETCHES ITS CHILDREN. "flex: none" sets grow and
+   shrink, not cross-axis alignment, so "Add another step" came out the full
+   width of the panel while every other button was 96px — the exact thing the
+   shared size class exists to prevent. */
+.lp-panel > .rx-btn { align-self: flex-start; }
+.lp-panel-title { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--text); }
+.lp-panel-lead { margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.55; max-width: 62ch; }
+.lp-field { display: flex; flex-direction: column; gap: 5px; }
+.lp-field-label { font-size: 11.5px; color: var(--text); }
+.lp-field-label i { color: var(--text-faint); font-style: normal; }
+.lp-field-hint { font-size: 11px; color: var(--text-faint); line-height: 1.5; max-width: 62ch; }
+
+.lp-review { border-radius: 10px; background: var(--bg-input); padding: 12px 14px; }
+.lp-review-goal { font-size: 13px; font-weight: 600; color: var(--text); }
+.lp-review-cwd { margin-top: 2px; font-size: 11px; color: var(--text-faint); }
+.lp-review-steps { margin: 10px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; }
+.lp-review-steps li { font-size: 12px; color: var(--text); }
+.lp-review-steps b { font-weight: 600; }
+.lp-review-who, .lp-review-check, .lp-review-nocheck { display: block; font-size: 11px; line-height: 1.45; }
+.lp-review-who { color: var(--text-faint); }
+.lp-review-check { color: var(--text-muted); }
+.lp-review-nocheck { color: var(--text-faint); font-style: italic; }
+

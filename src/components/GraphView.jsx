@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { api, saveToFile } from '../api.js'
 import { renderMermaid } from './Markdown.jsx'
+import PathPicker from './PathPicker.jsx'
 
 /**
  * Point Radiant at a folder; get a picture of it.
@@ -13,14 +14,23 @@ import { renderMermaid } from './Markdown.jsx'
  * explain what was drawn; it never gets to draw it.
  */
 
+// Module-level: whether this build can open a real picker never changes at runtime.
+const NATIVE_PICKER = typeof window !== 'undefined' && Boolean(window.radiantNative?.pickPath)
+
 const LEVELS = [
   { id: 'folder', label: 'Folders', hint: 'The shape of the project' },
   { id: 'file', label: 'Files', hint: 'Every file and what it imports' }
 ]
 
-export default function GraphView ({ defaultPath = '', mode = 'dark', onExplain, onError }) {
+export default function GraphView ({ defaultPath = '', mode = 'dark', projects = [], onExplain, onError }) {
   const [path, setPath] = useState(defaultPath)
-  const [level, setLevel] = useState('folder')
+  // ⚠️ null MEANS "LET THE SERVER DECIDE", and that is the point. Choosing a file
+  // has to do something different from choosing its folder or the button is a
+  // lie — the server draws the containing folder either way, so a file switches
+  // to file level. Working out WHICH was chosen belongs at the end that can stat
+  // the path: the client guessed from a dot in the name and got it wrong on
+  // "GoogleDrive-tony@templetongroup.ai", a folder.
+  const [level, setLevel] = useState(null)
   const [graph, setGraph] = useState(null)
   const [busy, setBusy] = useState(false)
   const [drawError, setDrawError] = useState(null)
@@ -37,7 +47,8 @@ export default function GraphView ({ defaultPath = '', mode = 'dark', onExplain,
     if (!p) return
     setBusy(true); setDrawError(null)
     try {
-      const g = await api.scanGraph(p, nextLevel || level)
+      const g = await api.scanGraph(p, nextLevel || level || 'auto')
+      setLevel(g.level)
       setGraph(g)
     } catch (e) { setGraph(null); setDrawError(e.message); onError?.(e.message) } finally { setBusy(false) }
   }, [path, level, onError])
@@ -80,43 +91,66 @@ export default function GraphView ({ defaultPath = '', mode = 'dark', onExplain,
   return (
     <section className='gv' aria-label='Graph'>
       <header className='gv-head'>
-        <h2 className='gv-title'>Graph</h2>
-        <form className='gv-point' onSubmit={e => { e.preventDefault(); scan() }}>
-          <input
-            className='gv-path'
-            value={path}
-            onChange={e => setPath(e.target.value)}
-            placeholder='/Users/you/Projects/something'
-            aria-label='Folder to draw'
-            spellCheck={false}
-          />
-          <button className='gv-draw' type='submit' disabled={busy || !path.trim()}>
-            {busy ? 'Reading…' : 'Draw it'}
-          </button>
-        </form>
+        <div>
+          <h2 className='gv-title'>Graph</h2>
+          <p className='gv-sub'>
+            A map of a codebase, read from the code. Choose a project folder and
+            Radiant opens every source file in it, follows the imports, and draws
+            which parts depend on which. Nothing is guessed — a box is a folder
+            that is really there, an arrow is an import that really resolves.
+          </p>
+        </div>
       </header>
 
-      <div className='gv-levels' role='group' aria-label='Level of detail'>
-        {LEVELS.map(l => (
-          <button
-            key={l.id}
-            className={'gv-level' + (level === l.id ? ' on' : '')}
-            title={l.hint}
-            onClick={() => { setLevel(l.id); if (graph) scan(l.id) }}
-          >{l.label}</button>
-        ))}
+      <div className='gv-point'>
+        <PathPicker
+          value={path}
+          onChange={p => { setPath(p); setLevel(null) }}
+          kind='any'
+          projects={projects}
+          label='Folder or file to draw'
+        />
+        <button className='rx-btn rx-btn-go' type='button' onClick={() => scan()} disabled={busy || !path.trim()}>
+          {busy ? 'Reading…' : 'Draw it'}
+        </button>
       </div>
+
+      {/* Level of detail only means something once there is something drawn. */}
+      {(graph || busy) && (
+        <div className='gv-levels' role='group' aria-label='Level of detail'>
+          {LEVELS.map(l => (
+            <button
+              key={l.id}
+              className={'rx-btn rx-btn-seg' + (level === l.id ? ' on' : '')}
+              title={l.hint}
+              onClick={() => { setLevel(l.id); if (graph) scan(l.id) }}
+            >{l.label}</button>
+          ))}
+        </div>
+      )}
 
       {drawError && <p className='gv-error'>{drawError}</p>}
 
       {!graph && !busy && !drawError && (
         <div className='gv-blank'>
-          <p className='gv-blank-lead'>Point Radiant at a folder.</p>
-          <p className='gv-blank-sub'>
-            It reads the imports in every source file and draws what actually
-            depends on what. Nothing here is guessed: a box is a folder that
-            exists, an arrow is an import that resolves to a file on disk.
-          </p>
+          <p className='gv-blank-lead'>Nothing drawn yet.</p>
+          <ol className='gv-steps'>
+            {/* ⚠️ DO NOT NAME A BUTTON THAT IS NOT THERE. The picker only exists
+                in the Mac app — in a browser it would return a path from the
+                wrong machine — so step one has to describe what is actually on
+                this screen. */}
+            <li>{NATIVE_PICKER
+              ? <><b>Choose folder</b> — the top of a project, the one with its <code>package.json</code> or <code>src</code> in it.</>
+              : <>Type the full path to the top of a project — the folder with its <code>package.json</code> or <code>src</code> in it, as it is on the Mac running Radiant.</>}</li>
+            <li><b>Draw it</b> — the reading takes a second or two, and happens entirely on this Mac.</li>
+            <li>Switch between <b>Folders</b> (the shape of the project) and <b>Files</b> (every file and what it imports).</li>
+          </ol>
+          {NATIVE_PICKER && (
+            <p className='gv-blank-sub'>
+              Choosing a <b>file</b> instead draws the folder it lives in, file by
+              file, so you can see what that one file pulls in.
+            </p>
+          )}
         </div>
       )}
 
@@ -185,13 +219,13 @@ export default function GraphView ({ defaultPath = '', mode = 'dark', onExplain,
             )}
 
             <div className='gv-acts'>
-              <button className='gv-act' onClick={explain} disabled={!onExplain}>Explain this</button>
+              <button className='rx-btn rx-btn-sm' onClick={explain} disabled={!onExplain}>Explain this</button>
               <button
-                className='gv-act'
+                className='rx-btn rx-btn-sm'
                 onClick={() => saveToFile(`${graph.name || 'graph'}.svg`, 'image/svg+xml', svg)}
                 disabled={!svg}
               >Save SVG</button>
-              <button className='gv-act' onClick={() => scan()} disabled={busy}>Read it again</button>
+              <button className='rx-btn rx-btn-sm' onClick={() => scan()} disabled={busy}>Read it again</button>
             </div>
           </aside>
         </div>

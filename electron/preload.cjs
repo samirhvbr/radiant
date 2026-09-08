@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('radiantNative', {
   },
   openSettings: tab => ipcRenderer.send('rad:open-settings', tab),
   pickFolder: (current, title) => ipcRenderer.invoke('rad:pick-folder', current, title),
+  // Either kind, for the Graph view. pickFolder stays as it was — Settings uses it.
+  pickPath: opts => ipcRenderer.invoke('rad:pick-path', opts),
   saveFile: payload => ipcRenderer.invoke('rad:save-file', payload),
   closeSettings: () => ipcRenderer.send('rad:close-settings'),
   onSettingsClosed: cb => {
