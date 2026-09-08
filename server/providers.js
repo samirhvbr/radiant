@@ -263,11 +263,25 @@ async function * sseEvents (response) {
 // untouched and the transcript still shows everything — this changes what the
 // request carries, not what happened. Recent results stay whole, because that
 // is the window where the agent is still working with them.
+// ⚠️ AND THE BOUNDARY MUST NOT MOVE EVERY ROUND, because prompt caching (#3)
+// matches on an exact BYTE PREFIX. A boundary of `length - KEEP_WHOLE` advances
+// by one on every round, so a message sent whole in round N is sent trimmed in
+// round N+7 — the prefix diverges there, and the automatic message-tail
+// breakpoint finds nothing to read. Folding would then be paying 1.25x to
+// rewrite the cache every round to save characters it had already cached at
+// 0.1x, which is worse than not folding at all.
+//
+// Quantizing the boundary to a step fixes it: the folded prefix is byte-
+// identical for STEP consecutive rounds, so the cache is written once and read
+// for the rest of them. The cost is keeping up to KEEP_WHOLE + STEP - 1 messages
+// whole instead of exactly KEEP_WHOLE, which is a longer verbatim window for the
+// agent and not a regression.
 const KEEP_WHOLE = 6          // the last N messages keep their results verbatim
+const FOLD_STEP = 8           // ...and the boundary only moves every N messages
 const FOLD_TO = 600           // how much of an older result survives
 
 export function foldOldToolResults (messages) {
-  const cut = messages.length - KEEP_WHOLE
+  const cut = Math.floor((messages.length - KEEP_WHOLE) / FOLD_STEP) * FOLD_STEP
   if (cut <= 0) return messages
   let folded = 0
   const out = messages.map((m, i) => {

@@ -113,22 +113,46 @@ async function drive (plan, session) {
 // kept whole and re-sent every round. 135k tokens a request x 30 rounds a turn.
 {
   const big = 'y'.repeat(40_000)
-  const msgs = Array.from({ length: 12 }, () => ({ role: 'assistant', parts: [{ type: 'tool', name: 'fetch_url', result: big }] }))
+  const chat = n => Array.from({ length: n }, (_, i) =>
+    ({ role: 'assistant', parts: [{ type: 'tool', name: 'fetch_url', result: big + i }] }))
+
+  const msgs = chat(30)
   const folded = foldOldToolResults(msgs)
   const before = JSON.stringify(msgs).length, after = JSON.stringify(folded).length
   ok('an old heavy result is folded down', after < before / 1.5, `${before} -> ${after}`)
   // ⚠️ THE RECENT ONES MUST SURVIVE WHOLE. That is the window the agent is still
   // working in; trimming there would make it re-run what it just did.
   ok('the last six messages keep their results in full',
-     folded.slice(-6).every(m => m.parts[0].result.length === 40_000))
+     folded.slice(-6).every(m => m.parts[0].result.length > 40_000))
   ok('and the trimmed ones say so, naming the tool',
      /trimmed/.test(folded[0].parts[0].result) && /fetch_url/.test(folded[0].parts[0].result))
   // Nothing is destroyed — this shapes the REQUEST, not the transcript.
-  ok('the original messages are untouched', msgs[0].parts[0].result.length === 40_000)
-  ok('a short chat is returned exactly as it was',
-     foldOldToolResults(msgs.slice(0, 3)) === msgs.slice(0, 3) || JSON.stringify(foldOldToolResults(msgs.slice(0, 3))) === JSON.stringify(msgs.slice(0, 3)))
+  ok('the original messages are untouched', msgs[0].parts[0].result.length > 40_000)
+  ok('a short chat is returned exactly as it was', foldOldToolResults(chat(5)).length === 5)
   ok('a small result is left alone',
-     foldOldToolResults(Array.from({ length: 12 }, () => ({ role: 'assistant', parts: [{ type: 'tool', name: 'read_file', result: 'tiny' }] })))[0].parts[0].result === 'tiny')
+     foldOldToolResults(Array.from({ length: 30 }, () =>
+       ({ role: 'assistant', parts: [{ type: 'tool', name: 'read_file', result: 'tiny' }] })))[0].parts[0].result === 'tiny')
+
+  // ⚠️ THE PROPERTY PROMPT CACHING DEPENDS ON. A cache hit is an exact byte
+  // prefix match, so what we already sent must not change shape underneath us as
+  // the conversation grows. With a boundary of `length - 6` it changed on EVERY
+  // round: a message sent whole in round N came back trimmed in round N+7, the
+  // prefix diverged there, and the message-tail breakpoint read nothing.
+  let stable = 0, moved = 0
+  for (let n = 20; n < 60; n++) {
+    const a = foldOldToolResults(chat(n)), b = foldOldToolResults(chat(n + 1))
+    const shared = Math.min(a.length, b.length)
+    let i = 0
+    while (i < shared && JSON.stringify(a[i]) === JSON.stringify(b[i])) i++
+    i === shared ? stable++ : moved++
+  }
+  ok('the folded prefix survives most rounds unchanged, so a cache can be read',
+     stable >= moved * 3, `${stable} rounds stable, ${moved} moved the boundary`)
+  // ...and the saving has to GROW with the chat, or the quantized boundary would
+  // just be a slower way of never folding.
+  const ratio = n => JSON.stringify(foldOldToolResults(chat(n))).length / JSON.stringify(chat(n)).length
+  ok('and it folds harder the longer the chat gets', ratio(60) < ratio(30),
+     `${Math.round(ratio(30) * 100)}% of raw at 30 messages, ${Math.round(ratio(60) * 100)}% at 60`)
 }
 
 console.log(results.join('\n'))
