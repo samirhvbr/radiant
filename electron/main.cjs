@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, ipcMain, nativeTheme, dialog, screen, session, globalShortcut } = require('electron')
+const { app, BrowserWindow, shell, ipcMain, nativeTheme, dialog, screen, session, globalShortcut, Notification } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -256,14 +256,36 @@ async function toggleHud () {
   hudWin.showInactive()
 }
 
-// Clicking a row asks the MAIN window to open that chat — the HUD owns no
-// conversations, it only points at them.
-ipcMain.on('rad:hud-open', (e, sessionId) => {
+// Come to the front, showing that chat. Both the HUD and a notification want
+// exactly this, and a notification that lands you in the wrong conversation is
+// worse than none.
+function raise (sessionId) {
   if (!win || win.isDestroyed()) return
   if (win.isMinimized()) win.restore()
   win.show()
   win.focus()
+  // ⚠️ THE WINDOW IS NOT THE APP. Focusing a window from a background app leaves
+  // Radiant behind whatever you were in, which is precisely the situation a
+  // notification is answering.
+  app.focus({ steal: true })
   if (sessionId) win.webContents.send('rad:open-session', sessionId)
+}
+
+// Clicking a row asks the MAIN window to open that chat — the HUD owns no
+// conversations, it only points at them.
+ipcMain.on('rad:hud-open', (e, sessionId) => raise(sessionId))
+
+// ⚠️ THE MAIN PROCESS, NOT THE RENDERER. A renderer notification is posted by
+// the page and cannot bring the app forward when it is clicked — and the
+// renderer is the thing being throttled while Radiant sits in the background,
+// which is every case that matters here. See src/notify.js for when this fires.
+ipcMain.on('rad:notify', (e, { title, body, sessionId } = {}) => {
+  if (!Notification.isSupported()) return
+  try {
+    const n = new Notification({ title: title || 'Radiant', body: body || '' })
+    n.on('click', () => raise(sessionId))
+    n.show()
+  } catch (err) { console.warn('[radiant] notification failed:', err.message) }
 })
 
 ipcMain.on('rad:hud-toggle', () => { toggleHud() })

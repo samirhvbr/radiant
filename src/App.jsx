@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { api, streamChat } from './api.js'
 import { applyTheme } from './theme.js'
+import { notifyAway, turnBody } from './notify.js'
 import Sidebar from './components/Sidebar.jsx'
 import WhatsNew from './components/WhatsNew.jsx'
 import Chat, { GroupPicker } from './components/Chat.jsx'
@@ -431,6 +432,7 @@ function DesktopApp () {
     // "this is the 'dropping chat' bug i was talking about... chat box is not
     // blinking, no working or thinking notice, nothing."
     let sawEnd = false
+    let chatTitle = target.title || 'Radiant'
     const endThinking = () => {
       if (liveMsg.thinkingActive) {
         liveMsg.thinkingActive = false
@@ -482,8 +484,17 @@ function DesktopApp () {
             setApproval(null)
             break
           }
-          case 'approval_request': setApproval({ id: ev.id, name: ev.name, args: ev.args }); break
-          case 'question_request': setQuestion({ id: ev.id, question: ev.question, options: ev.options || [] }); break
+          // ⚠️ THESE TWO STOP THE TURN DEAD UNTIL YOU ANSWER. A turn waiting on an
+          // approval looks exactly like a turn still working, from anywhere but
+          // this window, and it will wait forever.
+          case 'approval_request':
+            setApproval({ id: ev.id, name: ev.name, args: ev.args })
+            notifyAway({ sessionId, title: chatTitle, body: `Waiting for you: approve ${ev.name}?` })
+            break
+          case 'question_request':
+            setQuestion({ id: ev.id, question: ev.question, options: ev.options || [] })
+            notifyAway({ sessionId, title: chatTitle, body: ev.question || 'Waiting for your answer.' })
+            break
           case 'plan_mode': setSession(s => (s && s.id === sessionId ? { ...s, planMode: ev.on } : s)); break
           case 'stats': setStats(ev.stats); break
           case 'agent_turn': {
@@ -507,12 +518,17 @@ function DesktopApp () {
             liveMsg.parts.push({ type: 'notice', text: 'Stopped.' })
             break
           case 'todos': setTodos(ev.todos || []); break
-          case 'title': setSession(s => (s && s.id === sessionId ? { ...s, title: ev.title } : s)); refreshSessions(); break
+          // Also the name a notification about this chat goes out under — the
+          // first turn names the chat, and "New session" tells you nothing.
+          case 'title': chatTitle = ev.title || chatTitle; setSession(s => (s && s.id === sessionId ? { ...s, title: ev.title } : s)); refreshSessions(); break
           case 'skill_suggested':
             setSkillSuggestion(ev.suggestion)
             api.getConfig().then(setConfig).catch(() => {})
             break
-          case 'error': setError(ev.message); break
+          case 'error':
+            setError(ev.message)
+            notifyAway({ sessionId, title: chatTitle, body: `That turn failed: ${ev.message}` })
+            break
           default: break
         }
         setLive({ ...liveMsg, parts: [...liveMsg.parts] })
@@ -527,6 +543,11 @@ function DesktopApp () {
       // Only in the chat it happened in — an error banner about a turn you have
       // already navigated away from belongs to a conversation you are not reading.
       if (!sawEnd && openSessionRef.current === sessionId) setError(prev => prev || 'The connection to that turn dropped before it finished. Anything the agent had already done is saved; ask again to carry on.')
+      // ⚠️ THE POINT OF THE WHOLE THING. A turn can run for ten minutes and then
+      // finish, or stop early, with the window behind something else — and until
+      // now that was silent either way. The tag is the session, so this replaces
+      // any approval prompt still sitting in Notification Center for this chat.
+      notifyAway({ sessionId, title: chatTitle, body: turnBody({ sawEnd, parts: liveMsg.parts }) })
       setLive(null)
       try {
         const fresh = await api.getSession(sessionId)

@@ -1,7 +1,7 @@
 import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
-import { resolveSkillDir } from './config.js'
+import { resolveSkillDir, usableCwd } from './config.js'
 import { fetchRetry, isTransient } from './util.js'
 import { TOOL_DEFS, runTool, outsideWorkspace } from './tools.js'
 import { COMPUTER_TOOL_DEFS, COMPUTER_TOOL_NAMES, COMPUTER_SAFE, runComputerTool } from './computer-tools.js'
@@ -540,7 +540,9 @@ function planBlocked (name) {
 
 // ---------- the agent loop ----------
 export async function runTurn ({ provider, model, apiKey, getAccessToken, getAccountId, session, useTools, computerControl, skills, persona, memory, agentId, groupSpeakerId, groupNames, mcpTools, callMcp, askAgent, peerAgents, planMode, onPlanExit, effort, summarize, autoCompact, autoApproveComputer, emit, requestApproval, requestUserChoice, signal }) {
-  const cwd = session.cwd || os.homedir()
+  // ⚠️ NOT `session.cwd || os.homedir()`. A folder that is set and not here is
+  // the case that broke every tool call in the chat — see usableCwd.
+  const { dir: cwd, missing: strayCwd } = usableCwd(session.cwd)
   const system = systemPrompt(cwd, useTools, model, computerControl, skills, persona, planMode, memory)
   // proactive compaction before a very long turn
   if (autoCompact && summarize && estimateTokens(session.messages) > PROACTIVE_TOKENS) {
@@ -563,6 +565,12 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
   emit = ev => {
     if (ev.type === 'notice' && ev.text) assistant.parts.push({ type: 'notice', text: ev.text })
     emitRaw(ev)
+  }
+  // After the wrapper, so it is written into the transcript and not just
+  // streamed: this is the sentence that explains every odd path in the turn
+  // below, and it has to still be there when the turn is read back.
+  if (strayCwd) {
+    emit({ type: 'notice', text: `This chat's folder is not on this Mac — ${strayCwd} — so it is working in ${cwd} instead. That usually means the chat was started on another Mac; pick a folder for it in the header to make it stick here.` })
   }
   let compacted = false
 

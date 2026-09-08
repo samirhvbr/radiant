@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('radiantNative', {
     ipcRenderer.on('rad:settings-closed', h)
     return () => ipcRenderer.removeListener('rad:settings-closed', h)
   },
+  // A turn finished, failed, or is waiting on you, and you are somewhere else.
+  notify: payload => ipcRenderer.send('rad:notify', payload),
   // The HUD points at conversations; the main window owns them.
   hudOpenTask: sessionId => ipcRenderer.send('rad:hud-open', sessionId),
   toggleHud: () => ipcRenderer.send('rad:hud-toggle'),
