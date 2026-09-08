@@ -49,7 +49,14 @@ export function trimBody (text) {
  */
 export function turnBody ({ sawEnd, parts }) {
   if (!sawEnd) return 'That turn stopped before it finished.'
-  const tail = [...(parts || [])].reverse().find(p => p?.type === 'text' && String(p.text || '').trim())
+  const list = [...(parts || [])].reverse()
+  const tail = list.find(p => p?.type === 'text' && String(p.text || '').trim())
+  // ⚠️ A HALTED TURN ENDS WITH `done` LIKE ANY OTHER, so sawEnd cannot tell them
+  // apart — and "finished" is the one thing a turn that ran out of rounds did
+  // not do. The wrap-up it writes on the way out is the right body; it just
+  // needs to arrive labelled as an interruption, not an answer.
+  const halted = list.find(p => p?.type === 'halt')
+  if (halted) return trimBody('Stopped early — ' + (tail ? tail.text : halted.text || 'the turn used up its tool rounds.'))
   return trimBody(tail ? tail.text : 'Finished.')
 }
 

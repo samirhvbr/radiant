@@ -558,6 +558,9 @@ function DesktopApp () {
           }
           case 'usage': setUsage(u => ({ input: ev.input ?? u?.input, output: ev.output ?? u?.output })); break
           case 'notice': liveMsg.parts.push({ type: 'notice', text: ev.text }); break
+          // The turn ended before the work did. Not a notice — notices are
+          // asides, and this is the headline.
+          case 'halt': liveMsg.parts.push({ type: 'halt', reason: ev.reason, text: ev.text }); break
           // ⚠️ THE TURN SAYS IT STOPPED, rather than the stream merely ending.
           // A stream that just stops is indistinguishable from a dropped
           // connection, and the client shows a scary banner for that one.

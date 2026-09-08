@@ -564,6 +564,9 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
   const emitRaw = emit
   emit = ev => {
     if (ev.type === 'notice' && ev.text) assistant.parts.push({ type: 'notice', text: ev.text })
+    // ⚠️ A HALT MUST SURVIVE THE STREAM CLOSING, same as a notice — it is the
+    // only thing in the transcript that says the turn is not finished.
+    if (ev.type === 'halt') assistant.parts.push({ type: 'halt', reason: ev.reason, text: ev.text })
     emitRaw(ev)
   }
   // After the wrapper, so it is written into the transcript and not just
@@ -804,8 +807,54 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
     stats.toolMs += Date.now() - toolLoopStart
     if (signal?.aborted) { finishStats(); emit({ type: 'stopped' }); return }
   }
+  // ⚠️ THE LIMIT USED TO END THE TURN MID-AIR, AND THE ONLY TRACE WAS AN ITALIC
+  // GREY LINE. Tony, looking at a chat that had just done this: "the chat has
+  // failed again. with no warning. why is this happening. how can a user rely on
+  // this app if chats just stop with no warning and no explanation." He is right
+  // — "Stopped after 30 tool rounds." is 12px, faint, italic, and it landed at
+  // the bottom of thirty-five tool chips. It is also not an explanation: it says
+  // what the code did, not what the agent was doing, what got done, or what to
+  // do next.
+  //
+  // So the last thing a spent turn does is ASK. One more call with the tools
+  // taken away — it cannot loop again, that is the point — for a plain account
+  // of where it got to. That reply is the explanation, in the agent's own words,
+  // about this specific piece of work. Then the halt, which the client renders
+  // as a real block with a Continue button rather than a whisper.
+  if (!signal?.aborted) {
+    try {
+      const wrapUp = {
+        role: 'user',
+        text: `You have used this turn's limit of ${MAX_ROUNDS} rounds of tool use and cannot call any more tools. Do not call a tool. In 2-4 plain sentences tell the user: what you were trying to do, what is actually finished, what is not, and what would unblock it. If you were stuck repeating something that did not work, say so and say why.`
+      }
+      const msgs = [...session.messages, wrapUp]
+      const args = {
+        baseUrl: provider.baseUrl, apiKey, accessToken, model, system,
+        tools: false, toolDefs: [],
+        extraHeaders: provider.id === 'copilot' ? COPILOT_HEADERS : undefined,
+        effort, emit: emitS, signal
+      }
+      const wrapStart = Date.now()
+      const said = provider.type === 'anthropic'
+        ? await anthropicRound({ ...args, messages: toAnthropic(msgs) })
+        : useChatgpt
+          ? await chatgptRound({ ...args, accountId, messages: msgs })
+          : await openaiRound({ ...args, messages: toOpenAI(msgs, system) })
+      stats.llmMs += Date.now() - wrapStart
+      for (const p of said.parts) if (p.type === 'text') assistant.parts.push(p)
+    } catch (e) {
+      // ⚠️ NEVER LET THE EXPLANATION BE THE THING THAT FAILS. Whatever went
+      // wrong here, the halt below still has to reach the user — that is the
+      // entire bug being fixed.
+      console.warn('[radiant] wrap-up after the round limit failed:', e.message)
+    }
+  }
   finishStats()
-  emit({ type: 'notice', text: `Stopped after ${MAX_ROUNDS} tool rounds.` })
+  emit({
+    type: 'halt',
+    reason: 'rounds',
+    text: `This turn used its limit of ${MAX_ROUNDS} rounds of tool use and stopped. Nothing is lost — everything above is saved, and Continue picks it up from here.`
+  })
   emit({ type: 'done' })
 }
 

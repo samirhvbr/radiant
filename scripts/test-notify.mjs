@@ -50,6 +50,15 @@ eq('a dropped turn says so, not what it managed to say first',
   turnBody({ sawEnd: false, parts: [{ type: 'text', text: 'On it' }] }),
   'That turn stopped before it finished.')
 
+// A turn that ran out of tool rounds ends with `done` like any other, so this is
+// the only thing that keeps it from being announced as a finished answer.
+eq('a halted turn is labelled as one, and still carries the wrap-up',
+  turnBody({ sawEnd: true, parts: [{ type: 'text', text: 'Two packs are in, Scrollcraft is not.' }, { type: 'halt', reason: 'rounds', text: 'Used its limit of 30 rounds.' }] }),
+  'Stopped early — Two packs are in, Scrollcraft is not.')
+eq('a halt with no wrap-up still says something',
+  turnBody({ sawEnd: true, parts: [{ type: 'halt', reason: 'rounds', text: 'Used its limit of 30 rounds.' }] }),
+  'Stopped early — Used its limit of 30 rounds.')
+
 // ── the body itself ─────────────────────────────────────────────────────────
 eq('newlines collapse — the OS renders one line whatever we send',
   trimBody('Done.\n\n- one\n- two'), 'Done. - one - two')

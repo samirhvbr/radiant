@@ -1056,6 +1056,28 @@ code, pre, .mono { font-family: var(--font-mono); }
 .approval-card .row { display: flex; gap: 8px; }
 
 .notice { color: var(--text-faint); font-size: 12px; font-style: italic; margin: 8px 0; }
+
+/* ⚠️ THIS IS THE OPPOSITE OF A NOTICE, AND IT USED TO BE ONE. A turn that gives
+   up mid-job said so in 12px faint italic, underneath a wall of tool chips, and
+   that was the whole warning. Tony: "the chat has failed again. with no
+   warning… how can a user rely on this app if chats just stop with no warning
+   and no explanation." Full size, bordered, in the accent, with the way out
+   attached — it has to survive being the thirty-sixth thing on the screen. */
+.halt {
+  margin: 12px 0; padding: 12px 14px;
+  border: 1px solid color-mix(in oklab, var(--accent) 45%, var(--border));
+  border-left-width: 3px; border-radius: 10px;
+  background: color-mix(in oklab, var(--accent) 7%, transparent);
+}
+.halt-head { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13.5px; color: var(--text); }
+.halt-head svg { width: 15px; height: 15px; flex: none; color: var(--accent); }
+.halt-why { margin: 6px 0 0; font-size: 13px; line-height: 1.5; color: var(--text-dim); }
+.halt-go {
+  margin-top: 10px; padding: 6px 12px; font-size: 12.5px; font-weight: 600;
+  border-radius: 8px; border: 1px solid var(--accent);
+  background: var(--accent); color: var(--accent-fg, #fff); cursor: pointer;
+}
+.halt-go:hover { filter: brightness(1.08); }
 .loading-note { display: flex; flex-direction: column; gap: 2px; font-style: normal; }
 .loading-sub { font-size: 11px; color: var(--text-faint); font-style: normal; }
 .error-note { color: var(--danger); font-size: 12.5px; margin: 8px 0; white-space: pre-wrap; word-break: break-word; }
