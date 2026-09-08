@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, ipcMain, nativeTheme, dialog, screen, session, globalShortcut } = require('electron')
+const { app, BrowserWindow, shell, ipcMain, nativeTheme, dialog, screen, session, globalShortcut, Notification } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -178,7 +178,13 @@ async function createWindow () {
     // transparent so any color comes through?" hiddenInset keeps the traffic lights
     // where people expect them and lets the page paint behind them; the sidebar
     // reserves room for them (.brand in styles.css) so the wordmark is not covered.
-    titleBarStyle: 'hiddenInset',
+    // ⚠️ AND macOS IS THE ONLY PLACE THAT HONOURS IT. Electron ignores
+    // 'hiddenInset' elsewhere, so the window keeps a real title bar — and the page
+    // then reserves 38px for traffic lights that are not there and arms drag
+    // regions for a bar it does not own, which is not merely useless: a drag
+    // region is a hit-testing rectangle that swallows clicks. styles.css turns
+    // both off; see data-window-chrome in main.jsx.
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     backgroundColor: lastBg || (nativeTheme.themeSource === 'light' ? '#f5f5f6' : '#141517'),
     webPreferences: {
       contextIsolation: true,
@@ -256,14 +262,44 @@ async function toggleHud () {
   hudWin.showInactive()
 }
 
-// Clicking a row asks the MAIN window to open that chat — the HUD owns no
-// conversations, it only points at them.
-ipcMain.on('rad:hud-open', (e, sessionId) => {
+// Come to the front, showing that chat. Both the HUD and a notification want
+// exactly this, and a notification that lands you in the wrong conversation is
+// worse than none.
+function raise (sessionId) {
   if (!win || win.isDestroyed()) return
   if (win.isMinimized()) win.restore()
   win.show()
   win.focus()
+  // ⚠️ THE WINDOW IS NOT THE APP. Focusing a window from a background app leaves
+  // Radiant behind whatever you were in, which is precisely the situation a
+  // notification is answering.
+  app.focus({ steal: true })
   if (sessionId) win.webContents.send('rad:open-session', sessionId)
+}
+
+// Clicking a row asks the MAIN window to open that chat — the HUD owns no
+// conversations, it only points at them.
+ipcMain.on('rad:hud-open', (e, sessionId) => raise(sessionId))
+
+// ⚠️ THE MAIN PROCESS, NOT THE RENDERER. A renderer notification is posted by
+// the page and cannot bring the app forward when it is clicked — and the
+// renderer is the thing being throttled while Radiant sits in the background,
+// which is every case that matters here. See src/notify.js for when this fires.
+ipcMain.on('rad:notify', (e, { title, body, sessionId } = {}) => {
+  // ⚠️ A NOTIFICATION CAN BE REFUSED, AND THE REFUSAL IS SILENT. Notification
+  // Center drops them when Radiant has not been allowed to post, during Focus,
+  // and for an app macOS does not consider registered — and `show()` returns
+  // normally in every one of those cases. Silence is the exact failure this
+  // whole change exists to end, so the Dock bounces instead: no permission, no
+  // settings, and it is still there when you come back to the machine.
+  const bounce = () => { try { app.dock?.bounce('informational') } catch {} }
+  if (!Notification.isSupported()) return bounce()
+  try {
+    const n = new Notification({ title: title || 'Radiant', body: body || '' })
+    n.on('click', () => raise(sessionId))
+    n.on('failed', err => { console.warn('[radiant] notification refused:', err?.message || err); bounce() })
+    n.show()
+  } catch (err) { console.warn('[radiant] notification failed:', err.message); bounce() }
 })
 
 ipcMain.on('rad:hud-toggle', () => { toggleHud() })
@@ -271,7 +307,11 @@ ipcMain.on('rad:hud-toggle', () => { toggleHud() })
 app.whenReady().then(async () => {
   await createWindow()
   // ⌥⌘R — near ⌘R but not it, and unlikely to collide with an editor.
-  try { globalShortcut.register('Alt+Command+R', toggleHud) } catch { /* a taken shortcut is not fatal */ }
+  // ⚠️ `Command` IS THE SUPER KEY OFF A MAC, WHICH BELONGS TO THE DESKTOP. Alt+Super+R
+  // is a combination GNOME and KDE both reserve, so registering it either fails or
+  // takes a shortcut the window manager wanted. CommandOrControl keeps ⌥⌘R on a Mac
+  // and asks for Ctrl+Alt+R elsewhere.
+  try { globalShortcut.register('CommandOrControl+Alt+R', toggleHud) } catch { /* a taken shortcut is not fatal */ }
 })
 
 app.on('will-quit', () => { try { globalShortcut.unregisterAll() } catch {} })

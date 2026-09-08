@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { verdict, FIT_LABEL, FITS_WELL, FITS_TIGHT, FITS_NO, COMFORTABLE } from '../fit.js'
-import { api, startDownload, getDownloads, cancelDownload, streamQuantize, getServer, setServer, testServer, saveToFile } from '../api.js'
+import { api, startDownload, getDownloads, cancelDownload, streamQuantize, getServer, setServer, testServer, saveToFile, deviceNoun } from '../api.js'
 import { THEMES, MODES, FONTS, UI_SCALES, applyTheme, hexToOklch, accentHex, glyphColor } from '../theme.js'
 import { paletteWarnings, deriveAccent } from '../palette.js'
 import { MOTIONS } from './MotionBackground.jsx'
@@ -410,8 +410,8 @@ function DefaultModelBlock ({ config, onSettings }) {
       <div className='set-block-title'>Default model for new chats</div>
       <p className='hint' style={{ marginTop: 2 }}>
         What a new chat starts on when nothing else decides — an agent's own model, or a
-        project's, still wins. Set per Mac, so a Mac can default to the models it has
-        downloaded rather than ones it cannot run.
+        project's, still wins. Set per {deviceNoun(config?.platform)}, so each one can default to
+        the models it has downloaded rather than ones it cannot run.
       </p>
       <div className='model-pick-field' style={{ marginTop: 8 }}>
           <ModelPicker
@@ -425,7 +425,7 @@ function DefaultModelBlock ({ config, onSettings }) {
         </div>
       {current && !models.some(m => m.id === current) && (
         <div className='set-hint' style={{ marginTop: 6 }}>
-          <strong>{current}</strong> is set here but is not available on this Mac right now —
+          <strong>{current}</strong> is set here but is not available on this {deviceNoun(config?.platform)} right now —
           new chats will fall back until it is, or until you pick another.
         </div>
       )}
@@ -442,11 +442,14 @@ function ModelsPane ({ onModelsChanged, config, onSettings }) {
   // connected to another one is simply wrong, and it is how a pull started on a
   // laptop ends up filling a Mac in another room. Tony, on where a model lands:
   // "correct. thats what confused me."
+  // /api/system already describes the server's machine — hostname, chip, free
+  // space — so the word for it comes from the same answer as the rest.
+  const noun = deviceNoun(system?.platform)
   const onAnotherMac = Boolean(getServer().base)
   const serverMac = system?.hostname || (() => {
-    try { return new URL(getServer().base).hostname } catch { return 'the other Mac' }
+    try { return new URL(getServer().base).hostname } catch { return `the other ${noun}` }
   })()
-  const where = onAnotherMac ? serverMac : 'this Mac'
+  const where = onAnotherMac ? serverMac : `this ${noun}`
   const [local, setLocal] = useState({ running: true, models: [] })
   const [q, setQ] = useState('')
   const [sort, setSort] = useState('downloads')
@@ -522,7 +525,7 @@ function ModelsPane ({ onModelsChanged, config, onSettings }) {
       <h3>Local models</h3>
       {onAnotherMac && (
         <div className='set-hint' style={{ marginBottom: 10 }}>
-          You are using the Radiant on <strong>{serverMac}</strong>. Models download to that Mac
+          You are using the Radiant on <strong>{serverMac}</strong>. Models download to that {noun}
           and run there — not on this one — and the memory and free space below are its own.
           A download keeps going there even if you close this window.
         </div>
@@ -531,7 +534,11 @@ function ModelsPane ({ onModelsChanged, config, onSettings }) {
         <div className='spec-card'>
           <div className='spec-chip-name'>{system.chip}</div>
           <div className='spec-detail'>
-            {system.ramGB} GB unified memory · {system.cores} cores · macOS {system.osVersion}
+            {/* "unified memory" and "macOS" are both true only on a Mac. osVersion
+                already names itself off one ("Ubuntu 24.04.1 LTS"), so prefixing it
+                there would read "macOS Ubuntu 24.04.1 LTS". */}
+            {system.ramGB} GB {system.platform === 'darwin' ? 'unified memory' : 'memory'} · {system.cores} cores
+            · {system.platform === 'darwin' ? `macOS ${system.osVersion}` : system.osVersion}
             {system.diskFreeGB != null && <> · <span className={system.diskFreeGB < 20 ? 'fit-badge fit-tight' : ''}>{system.diskFreeGB} GB free on disk</span></>}
           </div>
           <div className='spec-note'>
@@ -964,7 +971,7 @@ function AgentsPane ({ config, onConfigChange, initialView }) {
       </div>
       {external.length > 0 && (
         <div className='ext-agents'>
-          <div className='ext-agents-title'>Connected agents on this Mac</div>
+          <div className='ext-agents-title'>Connected agents on this {deviceNoun(config?.platform)}</div>
           <p className='ext-agents-sub'>Radiant found other agent apps you have installed. Connect a Hermes agent to chat with the real one — its own model, skills, and memory — right inside Radiant.</p>
           {external.map(ext => {
             const already = agents.some(a => (a.name || '').trim().toLowerCase() === (ext.name || '').trim().toLowerCase())
@@ -1593,6 +1600,24 @@ function AgentPane ({ config, onSettings }) {
         />
         <span>Suggest skills from your activity <span className='desc'>— when the agent notices a repeatable, multi-step process or a workflow you set, it drafts a skill and asks you to approve it in Settings → Skills (cloud models only)</span></span>
       </label>
+      <label className='check-row'>
+        <input
+          type='checkbox'
+          checked={s.promptCaching !== false}
+          onChange={e => onSettings({ promptCaching: e.target.checked })}
+        />
+        <span>Prompt caching (Claude models) <span className='desc'>— reuse the unchanged part of the system prompt across turns instead of resending it in full. Turn off if a custom Anthropic-compatible endpoint rejects it.</span></span>
+      </label>
+      {s.promptCaching !== false && (
+        <div style={{ marginLeft: 24, marginTop: -4, marginBottom: 4 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Cache lifetime — match it to how quickly you usually reply</div>
+          <div className='seg-control'>
+            {[['5m', '5 minutes (default)'], ['1h', '1 hour (costs more per write, survives longer gaps)']].map(([id, label]) => (
+              <button key={id} className={'seg-btn' + ((s.cacheTtl === '1h' ? '1h' : '5m') === id ? ' on' : '')} onClick={() => onSettings({ cacheTtl: id })}>{label}</button>
+            ))}
+          </div>
+        </div>
+      )}
       <div style={{ marginTop: 10 }}>
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Default workspace folder for new sessions</div>
         <input
@@ -1629,12 +1654,41 @@ function AgentPane ({ config, onSettings }) {
       <ChromeAttachBlock />
 
       <div className='set-block'>
-        <div className='set-block-title'>What works on {config?.serverHost || 'this Mac'}</div>
+        <div className='set-block-title'>What works on {config?.serverHost || `this ${deviceNoun(config?.platform)}`}</div>
         <div className='comp-stat'>
           <span className={comp?.browser ? 'key-ok' : 'fit-badge fit-no'}>{comp?.browser ? '✓' : '—'} Browser control</span>
           <span className='desc'>drives your system Chrome. Nothing to set up.</span>
         </div>
-        {/* ⚠️ NAME THE PERMISSION THAT IS MISSING. This said "Screen Recording and
+        {/* ⚠️ OFF A MAC THERE IS NOTHING TO GRANT, SO THERE IS NOTHING TO ASK FOR.
+              Screen Recording and Accessibility are macOS permissions reached
+              through a Swift helper that only builds and only runs there. Both
+              come back false on any other platform, which read here as two
+              permissions the user had neglected — under advice to open a System
+              Settings pane their machine does not have. Say the true thing once
+              and point at the half that does work. */}
+        {comp?.platform && comp.platform !== 'darwin' ? (
+          <div className='comp-stat'>
+            <span className={comp.accessibility && comp.screenRecording ? 'key-ok' : 'fit-badge fit-no'}>
+              {comp.accessibility && comp.screenRecording ? '✓' : '—'} Desktop control
+            </span>
+            {/* ⚠️ NAME WHAT IS ACTUALLY IN THE WAY. There are two different
+                problems here and only one of them can be fixed: a missing
+                package is an apt install away, and a Wayland session is not —
+                it refuses synthetic input by design, so telling someone to
+                install something would send them after a fix that does not
+                exist. The helper reports which it is. */}
+            <span className='desc'>
+              {comp.reason === 'wayland'
+                ? 'this is a Wayland session, which refuses one app typing into another by design. Log in with the X11 (Xorg) session to use it. Browser control above works either way.'
+                : comp.reason === 'missing:xdotool' ? 'install xdotool (apt install xdotool) and reopen this pane.'
+                  : comp.reason === 'missing:imagemagick' ? 'install ImageMagick (apt install imagemagick) and reopen this pane.'
+                    : comp.reason?.startsWith('missing:') ? 'install xdotool and ImageMagick (apt install xdotool imagemagick) and reopen this pane.'
+                      : comp.accessibility && comp.screenRecording ? 'the agent can see the screen, click and type.'
+                        : 'not available — the helper for this platform did not answer.'}
+            </span>
+          </div>
+        ) : (<>
+          {/* ⚠️ NAME THE PERMISSION THAT IS MISSING. This said "Screen Recording and
               Accessibility are granted — ready to use" whenever the helper binary
               existed on disk, which it always does — so it claimed both while
               screencapture returned a wallpaper-only image and clicks went nowhere,
@@ -1669,6 +1723,7 @@ function AgentPane ({ config, onSettings }) {
               Browser control needs neither.
             </div>
           )}
+        </>)}
       </div>
 
       <div className='set-block'>
@@ -1756,7 +1811,7 @@ function AboutPane ({ config, onSettings }) {
         else setStatus({ hasUpdate: r.hasUpdate, latest: r.version, current: r.current })
       } else {
         const r = await api.updateCheck()
-        setStatus({ hasUpdate: r.hasUpdate, latest: r.latest, current: r.current, dmgUrl: r.dmgUrl })
+        setStatus({ hasUpdate: r.hasUpdate, latest: r.latest, current: r.current, downloadUrl: r.downloadUrl })
       }
     } catch (e) { setStatus({ error: e.message }) }
     setChecking(false)
@@ -1765,7 +1820,7 @@ function AboutPane ({ config, onSettings }) {
   const startDownload = () => { setPhase('downloading'); setProgress(0); native.download() }
   const restart = () => native.install()
   const relaunch = () => native.relaunch()
-  const openReleasePage = () => window.open(status?.dmgUrl || 'https://github.com/templetongroup/radiant/releases/latest', '_blank', 'noopener')
+  const openReleasePage = () => window.open(status?.downloadUrl || 'https://github.com/templetongroup/radiant/releases/latest', '_blank', 'noopener')
 
   return (
     <div className='set-section'>
@@ -2605,6 +2660,18 @@ const GUIDE = [
   {
     title: 'Chat & agents',
     items: [
+      ['A chat that stopped instantly, on every single message', 'The worst bug Radiant has shipped. A turn is allowed to spend a certain amount before it is cut off — a sensible thing to have. It was measured against the wrong number: not what the turn had spent, but what the entire conversation had ever spent, added up over its whole life. So a chat that had done a lot of work was permanently broken. Every message stopped in under a second, having done nothing, with a notice saying it had run out of budget. Pressing Continue produced the same instant nothing. There was no way out of it from inside the app, and the longer a chat had been useful the more certain it was to die that way. It now measures the turn, which is what it was always supposed to mean, and a chat that was bricked by this works again as soon as you update — nothing was lost, it simply could not run.'],
+      ['Long chats stop re-sending everything they have ever read', 'A chat that had read a few web pages was sending all of them, in full, on every round of every message — and a turn can take thirty rounds. One real conversation was 540,000 characters, of which 1,700 were things you had typed; the other 98% was raw output from tools, half of it five API responses kept whole and posted again and again. That is why a chat you had barely used felt enormous, slow and expensive, and why it eventually hit its own limits. Older tool results are now shortened on their way to the model, with a note saying how much was trimmed and that it can be fetched again. The last six exchanges are always kept whole — that is the part the agent is still working in. Nothing is deleted: your transcript is untouched and you still see every result in full. This changes only what gets posted, and it roughly halves it.'],
+      ['Dragging the window, properly this time', 'The Task, Loop and Graph screens had no way to grab the window, and three attempts to add one all used the same wrong idea: an invisible strip laid over the top of the app. On top it swallowed the buttons underneath it; made to ignore the mouse it may not drag at all; put behind everything it is covered by the app itself. The strip is gone. Each of those screens now uses its own heading bar as the handle \u2014 a real, visible part of the page, which is exactly what the chat screen has always used and the one arrangement that has never broken. It stays put when you scroll, so the handle does not disappear.'],
+      ['Turns stop when the agent is stuck, not when the work is long', 'A turn was cut off after 30 rounds of tool use \u2014 and 30 is smaller than an ordinary job. Asked to pull a page of skills and install them, the turn that was actually doing it spent 14 fetches and 13 file writes, 27 of its 30 rounds on the work itself, and was cut off part way through. A limit like that is meant to stop an agent looping forever; it was stopping real work at an arbitrary line.\n\nThe limit is now far out of the way, and the thing that can actually tell working from stuck does the stopping: if the agent makes the identical call a dozen times in a row it is halted and told so, naming the tool. There is also a ceiling on what one turn may spend, because a round count never measured cost \u2014 one stuck chat cost 25.7 million words of input. Whichever way a turn stops, it says which one it was, and Continue picks it up.'],
+      ['A chat that stops early says so, explains itself, and can carry on', 'A turn is allowed 30 rounds of tool use. When one used them all up it simply stopped \u2014 the only sign was a line of small grey italic text at the bottom of the reply, which after thirty-odd tool calls is no sign at all, and it did not explain anything either. Now, before it gives up, the agent is asked one last question with its tools taken away: what were you doing, what is done, what is left, and what would unblock it. Its answer goes in the chat, followed by a proper notice you cannot miss \u2014 and a Continue button that picks the work up from where it stopped instead of starting over.'],
+      ['Radiant tells you when a turn needs you, or when it is done', 'Radiant could not reach you before \u2014 there were no notifications at all. A turn that finished after ten minutes of work, a turn that failed, and a turn sitting there waiting for you to approve a command were all equally silent, and the only way to find out was to go and look. All four now send a notification when Radiant is not the window you are looking at: finished, failed, stopped early, and waiting on you. Clicking one brings Radiant to the front and opens that chat. Nothing is sent while you are already watching the window, and each chat only ever has one notification waiting \u2014 a finish replaces the approval prompt it followed.'],
+      ['A chat started on your other Mac no longer breaks every command it runs', 'If you sync your Radiant folder between Macs, your chats travel but their working folders cannot: a chat started on a Mac where you are \u201Copensource\u201D points at /Users/opensource, which does not exist on the other one. Nothing checked, so every command, every file read and every edit failed \u2014 and failed with nothing but an error code, so the agent could not work out why either and kept trying until it ran out of turns. A chat whose folder is not on this Mac now works in your home folder instead and says so in the conversation, naming the folder it wanted, so you can point it somewhere sensible. The chat is left alone, so it still works on the Mac that set it.'],
+      ['New task, New loop and New graph are clickable again, and in a sensible place', 'The strip along the top of the window that lets you drag it was covering most of those buttons \u2014 clicking the bottom few pixels worked and everything else did nothing, which is why it felt intermittent. It was covering the HUD button and the panel button too. The strip no longer intercepts clicks at all, and the three New buttons have moved from the far right of their header to underneath it, on the left, where the New buttons in the sidebar are.'],
+      ['A loop step can now pass because a command says so', 'Until now every check in a loop was judged by a model. The box even suggested “npm test exits 0” as an example of a good condition — and then asked an agent whether that had happened. Two models agreeing is not a check.\n\nA step now takes a command as well: it passes when that command exits 0. Type npm test, or pytest, or test -f dist/report.csv. It runs in the loop’s working folder before any agent is asked, so a failing check costs you nothing at all — no model, no waiting. And when it fails, whatever the command printed goes back to the agent as the evidence, so the retry starts from the actual error instead of a summary of it.\n\nYou can still write a plain-English condition too, and use both. The command is checked first because it is the one that cannot be argued with.\n\nA retry is also scoped now. It names the step that failed, why it failed, and says to fix that and nothing else. Without that, a returned step tends to grow — the agent opens the file, spots two other things and fixes those too, and a one-step correction lands as a change nobody asked for, on steps that had already passed their own checks.'],
+      ['Loops can check the whole goal, and start themselves', 'Two things a loop could not do before.\n\nThe first: every step passing is not the same as the goal being met. A loop can run the wrong three steps and verify each one perfectly. There is a new stage when you build a loop — “Done, and how often” — where you can give the whole run a check of its own, either a command or a sentence an agent judges. If the goal is not met, the loop starts over from step one, carrying the reason with it, up to a number of passes you set. Both are optional; leave them empty and a loop finishes when its last step passes, exactly as before.\n\nThe second: a loop can now run on a schedule — every 15 minutes, hourly, or daily. Useful for the jobs you keep meaning to run: check the build, triage what came in overnight, re-run the report.\n\nTwo honest limits. Radiant has to be open, because it is Radiant that runs the turns — that is what lets you watch a loop and interrupt it, and the price is that nothing happens while the app is quit. And if a scheduled loop fails twice in a row it switches its own schedule off and says so on the card, rather than repeating the same failure all night.'],
+      ['New group chat looks like the other new buttons', 'New session, New project and New group chat all create something, and now they all look the same. The group one was a lighter, dashed style meant to read as a second tier \u2014 but it only ever appeared directly beneath the solid one, so it looked like a mistake rather than a hierarchy. Its icon was an emoji, which ignored your theme and stayed the same colour on hover while the one next to it changed; it is a line icon now, drawn to match the agent icons.'],
+      ['The permissions button stays where you put it', 'With a long model name in the row \u2014 something like OPENROUTER moonshotai/kimi-k3 \u2014 the ask each / allow all button was pushed onto a second line under the message box, and it moved depending on which setting you had chosen. The model name now shortens with an ellipsis instead of shoving the other controls around.'],
       ['You can drag the window from any tab again', 'Only the Chat screen ever had a draggable strip along the top. Tasks never had one, and when Loops and Graphs arrived they did not either \u2014 so on those tabs there was nothing to grab and the window could not be moved. There is now one strip for the whole app rather than one per screen, so a new tab cannot arrive without it, and no button can ever be swallowed by it.'],
       ['Fewer tools, and none of them can flood the conversation', 'Three things that were quietly costing you money and time on every turn.\n\nRadiant described twelve tools to the model on every single request, whether or not any of them were used \u2014 and a tool description is not free: it shapes how the model generates, so a long list makes every answer slower as well as dearer. Three of those twelve were different ways to look at a background job, which is one idea, so they are now one tool. Listing a folder was another, and reading a folder now just lists it. Nine tools instead of twelve. If a model asks for one of the old names out of habit, it still works \u2014 it is simply no longer advertised.\n\nOnly three of the twelve limited how much they could return. Fetching a web page returned the whole thing, and so did a search, and so did anything from a connected MCP server \u2014 one large page could fill the conversation and cost real money. Everything is capped now, in one place, and when something is cut you get told how much went. It keeps the beginning AND the end, because a command whose last line was cut off reads like it succeeded.\n\nAnd only two of the twelve had a time limit, so one hung tool could hang the whole turn with no way out. Every tool call now has a budget.'],
       ['Stop actually stops', 'Pressing Stop while the agent was running a command did very little: the command ran to the end \u2014 or to its two-minute limit \u2014 and every other tool that turn had lined up ran too, so the agent carried on for a while after you told it to stop. Stop now kills the running command, skips whatever was queued behind it, and the button says it is stopping while that happens. Whatever the agent had already done is kept in the conversation.'],

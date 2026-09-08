@@ -3,7 +3,7 @@ import path from 'path'
 import crypto from 'crypto'
 import { execFile, spawn } from 'child_process'
 import { SPAWN_ENV } from './ollama.js'
-import { searchSessions } from './config.js'
+import { searchSessions, usableCwd } from './config.js'
 
 
 // background jobs (run_command with run_in_background:true). id -> job
@@ -332,6 +332,15 @@ export async function runTool (rawName, rawInput, cwd, signal) {
         return `Replaced ${input.replace_all ? count : 1} occurrence(s) in ${file}`
       }
       case 'run_command': {
+        // ⚠️ A MISSING FOLDER IS NOT AN EXIT CODE. spawn() fails before the shell
+        // starts when cwd is not there, and the branch below rendered that as
+        // "[exit code ENOENT]" — no folder named, nothing to act on. A model
+        // cannot recover from an error that does not say what is wrong, and one
+        // spent thirty rounds proving it. Chats come in with a real folder now
+        // (see usableCwd), so this is the backstop for a loop, task or graph
+        // whose folder is on another Mac.
+        const stray = usableCwd(cwd).missing
+        if (stray) return `Error: nothing was run — the folder this is set to work in does not exist on this Mac: ${stray}. It was probably set on another Mac. Say so rather than trying other commands; they will all fail the same way.`
         if (input.run_in_background) {
           const id = newJob(input.command, cwd)
           return `Started in the background as ${id}. Use job(action:"output", id:"${id}") to check on it, or action:"kill" to stop it.`
@@ -346,6 +355,9 @@ export async function runTool (rawName, rawInput, cwd, signal) {
             if (stderr) out += (out ? '\n--- stderr ---\n' : '') + stderr
             if (err?.name === 'AbortError' || signal?.aborted) out += '\n[stopped by you]'
             else if (err && err.killed) out += '\n[command timed out after 120s]'
+            // A numeric code is the command's own verdict; a string one means it
+            // never ran, and the message is the only thing that says why.
+            else if (err && typeof err.code === 'string') out += `\n[could not run it: ${err.message}]`
             else if (err && err.code) out += `\n[exit code ${err.code}]`
             resolve(out || '(no output)')
           })

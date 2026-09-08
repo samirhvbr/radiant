@@ -4,7 +4,7 @@ import HoldButton from './HoldButton.jsx'
 import { glyphColor } from '../theme.js'
 import { AgentGlyph } from './AgentIcons.jsx'
 import { isImported } from './Chat.jsx'
-import { api, saveToFile, getServer } from '../api.js'
+import { api, saveToFile, getServer, deviceNoun } from '../api.js'
 
 function UsageChip () {
   const [items, setItems] = useState(null)
@@ -238,7 +238,7 @@ function SessionRow ({ s, showAgent = true, ctx }) {
 // index in this list, so reordering it moves the pill; it is not decoration.
 const WORK = ['tasks', 'loops', 'graph']
 
-export default function Sidebar ({ section = 'chat', onSection, onOpenAgents, sessions, activeId, working, onOpen, onNew, onNewGroup, onDelete, onArchive, onRename, onPin, agents = [], projects = [], projectsError = null, onNewProject, onRenameProject, onDeleteProject, onMoveSession, onSettings, mode, onToggleMode, updateInfo, onUpdate, onCloseNav }) {
+export default function Sidebar ({ section = 'chat', onSection, onOpenAgents, sessions, activeId, working, onOpen, onNew, onNewGroup, onDelete, onArchive, onRename, onPin, agents = [], projects = [], projectsError = null, onNewProject, onRenameProject, onDeleteProject, onMoveSession, onSettings, mode, onToggleMode, updateInfo, onUpdate, onCloseNav, platform }) {
   const agentOf = id => agents.find(a => a.id === id)
   const [width, setWidth] = useState(() => {
     const saved = Number(localStorage.getItem('radiant.sidebarWidth'))
@@ -426,7 +426,13 @@ export default function Sidebar ({ section = 'chat', onSection, onOpenAgents, se
           : <button className='new-group-btn' onClick={() => setEditing({ kind: 'new-project', value: '' })}><Icon.folder size={13} /> New project</button>
       )}
       {view === 'bots' && agents.length >= 2 && onNewGroup && (
-        <button className='new-group-btn' onClick={() => onNewGroup()}>👥 New group chat</button>
+        /* ⚠️ AN ICON, NOT AN EMOJI. Its sibling "New project" uses Icon.folder,
+           a line drawing that inherits currentColor — so on hover, where
+           .new-group-btn:hover sets color: var(--accent), the folder turned
+           accent and the emoji stayed the same blue it always is. Same class,
+           same row, one responding to the theme and one not. Icon.users was
+           already in the set, unused. */
+        <button className='new-group-btn' onClick={() => onNewGroup()}><Icon.users size={13} /> New group chat</button>
       )}
 
       {view === 'chats' ? (
@@ -588,7 +594,7 @@ export default function Sidebar ({ section = 'chat', onSection, onOpenAgents, se
             answering it meant opening another screen. */}
         {version && (
           remoteBase
-            ? <span className='sidebar-version is-remote' title={`Showing Radiant ${version} on ${remoteHost}. Settings → Devices to use this Mac instead.`}>
+            ? <span className='sidebar-version is-remote' title={`Showing Radiant ${version} on ${remoteHost}. Settings → Devices to use this ${deviceNoun(platform)} instead.`}>
                 {remoteHost} · {version}
               </span>
             : <span className='sidebar-version' title={`Radiant ${version}`}>{version}</span>

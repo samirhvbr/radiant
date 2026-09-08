@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { api, streamChat } from './api.js'
 import { applyTheme } from './theme.js'
+import { notifyAway, turnBody } from './notify.js'
 import Sidebar from './components/Sidebar.jsx'
 import WhatsNew from './components/WhatsNew.jsx'
 import Chat, { GroupPicker } from './components/Chat.jsx'
@@ -60,7 +61,7 @@ function DesktopApp () {
     try { localStorage.setItem('radiant.rightOpen', rightOpen ? '1' : '0') } catch {}
   }, [rightOpen])
   const [rightTab, setRightTab] = useState('activity')
-  const [updateInfo, setUpdateInfo] = useState(null) // {latest, dmgUrl} when an update exists
+  const [updateInfo, setUpdateInfo] = useState(null) // {latest, downloadUrl} when an update exists
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [compareOpen, setCompareOpen] = useState(false)
   const [navOpen, setNavOpen] = useState(false) // mobile sidebar drawer
@@ -385,9 +386,15 @@ function DesktopApp () {
     setLoopRun(null)
     if (r.action === 'failed') {
       const bad = (r.loop?.steps || []).find(x => x.state === 'failed')
+      // ⚠️ A GOAL THAT RAN OUT OF PASSES HAS NO FAILED STEP TO POINT AT — every
+      // step passed its own check, which is exactly the situation a goal check
+      // exists to catch. Falling through to "stopped without finishing" would
+      // hide the one sentence that says what is actually still wrong.
       setError(bad
         ? `"${r.loop.title}" stopped at "${bad.title}" after ${bad.attempts} attempts. The check said: ${bad.lastFail}`
-        : `"${r.loop?.title || 'That loop'}" stopped without finishing.`)
+        : r.loop?.lastGoalFail
+          ? `"${r.loop.title}" ran every step ${r.loop.pass} time${r.loop.pass === 1 ? '' : 's'} and still did not meet its goal: ${r.loop.lastGoalFail}`
+          : `"${r.loop?.title || 'That loop'}" stopped without finishing.`)
     }
   }
 
@@ -403,6 +410,48 @@ function DesktopApp () {
     setLoopRun(null)
     try { await api.stopLoop(loop.id) } catch (e) { setError(e.message) }
   }
+
+  /**
+   * The scheduler: the only thing in Radiant that starts work nobody asked for
+   * in this minute.
+   *
+   * ⚠️ IT LIVES HERE BECAUSE THE CLIENT IS THE RUN ENGINE. The server never runs
+   * a turn — it answers "here is the next turn" — so a timer in the server could
+   * mark a loop due and nothing would happen. That is the trade the whole loop
+   * layer is built on: approvals, steering, tools and a transcript you can watch,
+   * paid for with "only while Radiant is open". The Loops view says so next to
+   * the control rather than leaving someone to discover it.
+   *
+   * ⚠️ AND ONE AT A TIME, NEVER OVER SOMETHING RUNNING. Due-ness is a function of
+   * the clock, so every tick would start the same loop again while the first was
+   * still going. Both guards are refs: `busyRef` reads the render state without
+   * the tick capturing a stale copy of it, and loopTurnRef is the turn already
+   * dispatched.
+   */
+  const busyRef = useRef(false)
+  useEffect(() => {
+    busyRef.current = Boolean(live?.streaming || pendingPrompt || loopRun)
+  }, [live?.streaming, pendingPrompt, loopRun])
+
+  // The tick calls through a ref so it always runs the current closure — pumpLoop
+  // reaches openSession, and a version of it captured at mount would open the
+  // wrong thing months into a session.
+  const runLoopRef = useRef(null)
+  useEffect(() => { runLoopRef.current = runLoop })
+
+  useEffect(() => {
+    const tick = async () => {
+      if (busyRef.current || loopTurnRef.current) return
+      let due = null
+      try { due = (await api.listLoops()).find(l => l.due) } catch { return }
+      // Check again: the fetch above is a round trip, and a loop may have started
+      // during it.
+      if (!due || busyRef.current || loopTurnRef.current) return
+      runLoopRef.current?.(due)
+    }
+    const t = setInterval(tick, 30_000)
+    return () => clearInterval(t)
+  }, [])
 
   const send = async content => {
     if (!session || live?.streaming) return
@@ -431,6 +480,7 @@ function DesktopApp () {
     // "this is the 'dropping chat' bug i was talking about... chat box is not
     // blinking, no working or thinking notice, nothing."
     let sawEnd = false
+    let chatTitle = target.title || 'Radiant'
     const endThinking = () => {
       if (liveMsg.thinkingActive) {
         liveMsg.thinkingActive = false
@@ -482,8 +532,17 @@ function DesktopApp () {
             setApproval(null)
             break
           }
-          case 'approval_request': setApproval({ id: ev.id, name: ev.name, args: ev.args }); break
-          case 'question_request': setQuestion({ id: ev.id, question: ev.question, options: ev.options || [] }); break
+          // ⚠️ THESE TWO STOP THE TURN DEAD UNTIL YOU ANSWER. A turn waiting on an
+          // approval looks exactly like a turn still working, from anywhere but
+          // this window, and it will wait forever.
+          case 'approval_request':
+            setApproval({ id: ev.id, name: ev.name, args: ev.args })
+            notifyAway({ sessionId, title: chatTitle, body: `Waiting for you: approve ${ev.name}?` })
+            break
+          case 'question_request':
+            setQuestion({ id: ev.id, question: ev.question, options: ev.options || [] })
+            notifyAway({ sessionId, title: chatTitle, body: ev.question || 'Waiting for your answer.' })
+            break
           case 'plan_mode': setSession(s => (s && s.id === sessionId ? { ...s, planMode: ev.on } : s)); break
           case 'stats': setStats(ev.stats); break
           case 'agent_turn': {
@@ -499,6 +558,9 @@ function DesktopApp () {
           }
           case 'usage': setUsage(u => ({ input: ev.input ?? u?.input, output: ev.output ?? u?.output })); break
           case 'notice': liveMsg.parts.push({ type: 'notice', text: ev.text }); break
+          // The turn ended before the work did. Not a notice — notices are
+          // asides, and this is the headline.
+          case 'halt': liveMsg.parts.push({ type: 'halt', reason: ev.reason, text: ev.text }); break
           // ⚠️ THE TURN SAYS IT STOPPED, rather than the stream merely ending.
           // A stream that just stops is indistinguishable from a dropped
           // connection, and the client shows a scary banner for that one.
@@ -507,12 +569,17 @@ function DesktopApp () {
             liveMsg.parts.push({ type: 'notice', text: 'Stopped.' })
             break
           case 'todos': setTodos(ev.todos || []); break
-          case 'title': setSession(s => (s && s.id === sessionId ? { ...s, title: ev.title } : s)); refreshSessions(); break
+          // Also the name a notification about this chat goes out under — the
+          // first turn names the chat, and "New session" tells you nothing.
+          case 'title': chatTitle = ev.title || chatTitle; setSession(s => (s && s.id === sessionId ? { ...s, title: ev.title } : s)); refreshSessions(); break
           case 'skill_suggested':
             setSkillSuggestion(ev.suggestion)
             api.getConfig().then(setConfig).catch(() => {})
             break
-          case 'error': setError(ev.message); break
+          case 'error':
+            setError(ev.message)
+            notifyAway({ sessionId, title: chatTitle, body: `That turn failed: ${ev.message}` })
+            break
           default: break
         }
         setLive({ ...liveMsg, parts: [...liveMsg.parts] })
@@ -527,6 +594,11 @@ function DesktopApp () {
       // Only in the chat it happened in — an error banner about a turn you have
       // already navigated away from belongs to a conversation you are not reading.
       if (!sawEnd && openSessionRef.current === sessionId) setError(prev => prev || 'The connection to that turn dropped before it finished. Anything the agent had already done is saved; ask again to carry on.')
+      // ⚠️ THE POINT OF THE WHOLE THING. A turn can run for ten minutes and then
+      // finish, or stop early, with the window behind something else — and until
+      // now that was silent either way. The tag is the session, so this replaces
+      // any approval prompt still sitting in Notification Center for this chat.
+      notifyAway({ sessionId, title: chatTitle, body: turnBody({ sawEnd, parts: liveMsg.parts }) })
       setLive(null)
       try {
         const fresh = await api.getSession(sessionId)
@@ -574,21 +646,12 @@ function DesktopApp () {
 
   return (
     <div className={'app' + (navOpen ? ' nav-open' : '')}>
-      {/* ⚠️ ONE STRIP, OUTSIDE THE VIEW SWITCH, SO A NEW TAB CANNOT SHIP WITHOUT
-          ONE. Only Chat ever had a draggable surface: its .topbar, plus a strip
-          on the welcome screen. Tasks never had one and nobody noticed; then
-          Loops and Graphs arrived and Tony lived on the Graph tab, where the
-          window simply could not be moved. "and now i cant grab the top bar
-          again. what the fuck!!!" — the third time this class has shipped.
-          Putting it here rather than in each view means the next tab inherits it
-          by existing. Safe to overlap .topbar: both are drag, and every control
-          is exempted by the blanket rule in styles.css. */}
-      <div className='app-drag' />
       <MotionBackground kind={config.settings.motionBg} />
       {/* Unbidden, once, after an update — see components/WhatsNew.jsx */}
       <WhatsNew />
       <div className='nav-backdrop' onClick={() => setNavOpen(false)} />
       <Sidebar
+        platform={config?.platform}
         section={view}
         onSection={setView}
         onOpenAgents={() => { setAgentView('library'); setSettingsTab('agents'); setSettingsOpen(true) }}
@@ -676,6 +739,7 @@ function DesktopApp () {
       ) : (
       <Chat
         serverHost={config.serverHost}
+        platform={config.platform}
         skills={config.skills || []}
         onAddSkill={addSkillToChat}
         onRemoveSkill={removeSkillFromChat}

@@ -15,6 +15,8 @@ run "read me"        node scripts/test-readme.mjs
 run "window drag"    node scripts/test-drag.mjs
 run "cross-origin"   node scripts/test-origin.mjs
 run "command risk"   node scripts/test-command-risk.mjs
+run "update asset"   node scripts/test-update-asset.mjs
+run "desktop keys"   node scripts/test-desktop-keys.mjs
 run "memory"         node scripts/test-memory.mjs
 run "plugin bridge"  node scripts/test-bridge.mjs
 run "cloud model"    node scripts/test-cloud-model.mjs
@@ -24,6 +26,8 @@ run "the task board"  node scripts/test-tasks.mjs
 run "loops"          node scripts/test-loops.mjs
 run "the loop runner" node scripts/test-loop-run.mjs
 run "stop"           node scripts/test-stop.mjs
+run "round limits"   node scripts/test-rounds.mjs
+run "caching"        node scripts/test-caching.mjs
 run "tool bounds"    node scripts/test-tool-bounds.mjs
 run "graph rules"    node scripts/test-graph.mjs
 run "the graph runner" node scripts/test-graph-run.mjs

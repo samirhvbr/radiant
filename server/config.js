@@ -59,6 +59,37 @@ function reachable (dir) {
   }
 }
 
+/**
+ * The folder a turn can actually work in, and the one it asked for if that is
+ * not here.
+ *
+ * ⚠️ A SESSION'S FOLDER IS A PATH ON ONE MAC, AND SESSIONS SYNC. defaultCwd is
+ * in MACHINE_KEYS for exactly this reason — "the folder work starts in"
+ * describes the Mac, not the person — but the same reasoning was never applied
+ * to the folder saved on each session, which travels in the synced data
+ * directory like everything else. So every chat started on Tony's other Mac
+ * arrived here pointing at /Users/opensource, which does not exist here, and
+ * every chat started here arrives there pointing at /Users/tonyricciardi.
+ *
+ * Nothing checked. `spawn` with a cwd that is not there fails before the shell
+ * starts, and the agent got `[exit code ENOENT]` — no folder named, no reason —
+ * for `pwd`, for `ls`, for everything. Five sessions in the synced folder were
+ * in this state; the model burned all 30 tool rounds inventing theories about
+ * "the shell adapter" and the turn died. That is the "lots of failures within
+ * chats".
+ *
+ * Substituting is right and rewriting is not: the path is correct on the Mac
+ * that set it, so this hands back a folder that works HERE and leaves the
+ * session alone. `missing` is how the caller tells the user, which it must —
+ * silently working somewhere else is its own bug.
+ */
+export function usableCwd (cwd) {
+  if (cwd && reachable(cwd)) return { dir: cwd, missing: null }
+  const preferred = loadMachineSettings().defaultCwd
+  const dir = preferred && reachable(preferred) ? preferred : os.homedir()
+  return { dir, missing: cwd || null }
+}
+
 function resolveDataDir () {
   // An explicit env var wins — it is how the test harness and a sandboxed run
   // get their own directory without touching a real one.
@@ -563,7 +594,11 @@ export function saveConfig (cfg, { forgetting = [] } = {}) {
 // macOS, and brctl is a diagnostic tool that does not belong in a shipped app.
 // Foundation's URL resource values are the supported answer, reached through
 // the native helper we already ship.
-const HELPER = [
+// ⚠️ AND ONLY ON macOS. The helper is Mach-O and everything it is asked here is
+// about iCloud, so off a Mac there is no question to put to it — but the file
+// ships in every packaged target, so existsSync alone would find one. Undefined
+// is what the callers below already treat as "cannot tell", which is the truth.
+const HELPER = process.platform !== 'darwin' ? undefined : [
   path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'native', 'radiant-control'),
   path.join(process.resourcesPath || '', 'native', 'radiant-control')
 ].find(p => { try { return fs.existsSync(p) } catch { return false } })
@@ -874,6 +909,12 @@ export function publicConfig (cfg) {
     // The UI needs to SEE what was removed, or the library cannot offer it back
     // and "Remove" becomes a one-way door.
     serverHost: serverHost(),
+    // ⚠️ THE PLATFORM OF THE MACHINE RUNNING THE SERVER, WHICH IS THE ONE BEING
+    // DESCRIBED. Everything the UI says about "this Mac" — where models download,
+    // which agents are connected, whose screen the agent drives — is about the
+    // server's machine, not the one holding the window. serverHost already
+    // travels for exactly that reason; this is the same fact, one field over.
+    platform: process.platform,
     removedAgents: cfg.removedAgents || [],
     // ⚠️ SEND THE WHOLE DEFINITION, NOT JUST THE ID. With only ids the library
     // had to invent what it showed: a generic robot for every one of them, and a

@@ -1,32 +1,90 @@
 import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
-import { resolveSkillDir } from './config.js'
+import { resolveSkillDir, usableCwd } from './config.js'
 import { fetchRetry, isTransient } from './util.js'
 import { TOOL_DEFS, runTool, outsideWorkspace } from './tools.js'
 import { COMPUTER_TOOL_DEFS, COMPUTER_TOOL_NAMES, COMPUTER_SAFE, runComputerTool } from './computer-tools.js'
 import { boundResult, withBudget, MAX_TOOL_MS, ToolTimeout } from './tool-bounds.js'
 import { COPILOT_HEADERS } from './oauth.js'
 
-const MAX_ROUNDS = 30
+// ⚠️ THIS WAS 30, AND 30 IS SMALLER THAN AN ORDINARY JOB. Tony asked Radiant to
+// pull a page of skills and install them; the turn that was actually doing it
+// spent 14 fetch_url and 13 write_file calls — 27 of its 30 rounds on the work
+// itself — and was cut off mid-install. Three turns before it had gone the same
+// way, one of them spending 20 rounds just reading files. "why does it keep
+// stopping. This is fucking ridiculous."
+//
+// A round cap is a backstop against an agent looping forever. It is NOT a work
+// budget, and using it as one stops real work at an arbitrary line. The thing
+// that actually catches a stuck agent is right below this: identical calls,
+// counted. That existed the whole time and only ever printed a nudge.
+//
+// So the backstop moves out of the way of real work, and the detector that
+// knows the difference between "working" and "stuck" gets teeth.
+const MAX_ROUNDS = 200
 
-function systemPrompt (cwd, useTools, model, computerControl, skills, persona, planMode, memory) {
+// ⚠️ AND A REAL CEILING ON WHAT A TURN MAY SPEND, because 200 rounds of a
+// re-sent conversation is a bill, and a round count never measured the bill
+// anyway. One stuck chat cost 25.7 million input tokens across 12 turns.
+// Tokens are what runs out; tokens are what is counted.
+// ⚠️ AND 2M WAS ALSO TOO LOW, FOR THE SAME REASON THE ROUND CAP WAS. A long
+// chat re-sends its whole history every round: Tony's was 135k tokens per
+// request, so 2M is fifteen rounds — it would have cut real work off all over
+// again, just with a different message. A backstop belongs far out of the way of
+// ordinary work; this one is for a turn that has genuinely run away.
+const MAX_TURN_TOKENS = Number(process.env.RADIANT_MAX_TURN_TOKENS || 12_000_000)
+
+// Identical consecutive calls. Nudged at 3, 5 and 8 — and if it is STILL making
+// the same call after that, it is not going to stop on its own.
+const STUCK_AT = 12
+
+// Split into a STABLE half (identical across turns unless the user explicitly
+// reconfigures the session — persona, skills, cwd, tool/plan/computer-control
+// toggles) and a VOLATILE half (recomputed fresh from the CURRENT turn's input,
+// so it is essentially guaranteed to differ every request): retrieved memory
+// facts (relevantFacts() is scored against this turn's user text — see
+// server/memory.js) and the lead-model plan addendum (regenerated per turn when
+// an agent has a plannerModel). Putting volatile content in the system array
+// AFTER a cache_control-marked stable block keeps the marked prefix byte-
+// identical across turns without touching the volatile content's visibility —
+// see the claude-api skill's shared/prompt-caching.md, "Architectural guidance"
+// + "Multi-turn conversations". A stable-half change (e.g. the user flips
+// planMode or edits skills) is a one-time cache miss, not a per-turn one — that
+// tradeoff is deliberate, not the bug this split fixes.
+function systemPrompt (cwd, useTools, model, computerControl, skills, persona, planMode, planAddendum, memory) {
   const personaText = persona ? `\n\n${persona}` : ''
-  const memoryText = (memory && memory.length)
-    ? `\n\nWhat you remember about this user and their projects (from past sessions — use it when relevant, don't recite it):\n${memory.map(f => `• ${f}`).join('\n')}`
-    : ''
   const planText = planMode
     ? '\n\nPLAN MODE IS ON. Do NOT edit files, create files, or run mutating commands yet. Research the codebase (read/list/grep only), think through the approach, then present a concrete step-by-step plan by calling the exit_plan_mode tool with your plan in markdown. Only after the user approves the plan will you be able to make changes.'
     : ''
   const skillText = (skills && skills.length)
     ? `\n\nActive skills (follow these):\n${skills.map(s => `• ${s.name}: ${s.content}${s.dir && resolveSkillDir(s.dir) ? `\n  Skill folder: ${resolveSkillDir(s.dir)}` : ''}`).join('\n')}`
     : ''
-  return `You are a coding agent running inside Radiant, a local coding harness on the user's ${os.type() === 'Darwin' ? 'Mac' : os.type()} (${os.platform()} ${os.release()}). Radiant is the app, not you: you are the model "${model}". If asked what model you are, answer with your actual model name and maker.${personaText}
+  const stable = `You are a coding agent running inside Radiant, a local coding harness on the user's ${os.type() === 'Darwin' ? 'Mac' : os.type()} (${os.platform()} ${os.release()}). Radiant is the app, not you: you are the model "${model}". If asked what model you are, answer with your actual model name and maker.${personaText}
 Workspace directory: ${cwd}
 ${useTools ? 'You have tools to read, write, and edit files and to run shell commands in the workspace. Use them to investigate before answering and to make changes when asked. Prefer edit_file for small changes and write_file for new files. After making changes, verify them when practical (run the code, run tests).' : 'Tools are disabled for this conversation; answer from knowledge and the conversation only.'}${computerControl ? `
 You can also control the computer. browser_* tools drive an automated browser; screen_* tools control the whole desktop. ALWAYS take a screenshot first (browser_screenshot / screen_screenshot) and look at it before clicking or typing — click coordinates are pixel positions read from the most recent screenshot. Work in small steps: screenshot, act, screenshot again to confirm. Prefer browser_* for web tasks.` : ''}
-Be direct and concise. Use markdown; fence code blocks with a language tag. When you finish a task, summarize what changed in a sentence or two.${planText}${skillText}${memoryText}`
+Be direct and concise. Use markdown; fence code blocks with a language tag. When you finish a task, summarize what changed in a sentence or two.${planText}${skillText}`
+
+  const planAddendumText = planAddendum ? `\n\n${planAddendum}` : ''
+  const memoryText = (memory && memory.length)
+    ? `\n\nWhat you remember about this user and their projects (from past sessions — use it when relevant, don't recite it):\n${memory.map(f => `• ${f}`).join('\n')}`
+    : ''
+  const volatile = `${planAddendumText}${memoryText}`
+
+  return { stable, volatile, full: stable + volatile }
 }
+
+// Very rough token estimate (chars/4) used only to decide whether the stable
+// system prefix clears a model's minimum cacheable length — see
+// shared/prompt-caching.md's per-model minimum table (512-4096 tokens,
+// non-monotonic across generations). Radiant supports arbitrary/rolling model
+// ids across many Anthropic-compatible endpoints, so there's no reliable way to
+// look up an exact per-model number here; 1024 is a conservative mid-table
+// default that a real coding-agent system prompt (identity + tool
+// instructions + persona/skills) almost always clears anyway.
+const MIN_CACHEABLE_TOKENS = 1024
+function roughTokens (text) { return Math.round((text || '').length / 4) }
 
 // ---------- internal message format -> provider wire formats ----------
 // session.messages: [{role:'user', text, attachments} | {role:'assistant', parts:[{type:'text',text}|{type:'tool',id,name,args,result}]}]
@@ -192,6 +250,58 @@ async function * sseEvents (response) {
   }
 }
 
+
+// ⚠️ A TOOL RESULT IS NEEDED FOR THE NEXT ROUND OR TWO, NOT FOREVER. Measured on
+// a real chat of Tony's: 540,000 characters, of which 98% were tool results and
+// 1,739 characters were things he actually typed. fetch_url alone was half of
+// it — five raw GitHub API responses of 43k, 33k, 33k, 33k and 22k characters,
+// kept whole and re-sent on EVERY round. 135k tokens a request, 30 rounds a
+// turn, 29.8M tokens over the chat. "how can this chat be so long. i barely did
+// anything."
+//
+// So old results are folded down on the way OUT to the model. Storage is
+// untouched and the transcript still shows everything — this changes what the
+// request carries, not what happened. Recent results stay whole, because that
+// is the window where the agent is still working with them.
+// ⚠️ AND THE BOUNDARY MUST NOT MOVE EVERY ROUND, because prompt caching (#3)
+// matches on an exact BYTE PREFIX. A boundary of `length - KEEP_WHOLE` advances
+// by one on every round, so a message sent whole in round N is sent trimmed in
+// round N+7 — the prefix diverges there, and the automatic message-tail
+// breakpoint finds nothing to read. Folding would then be paying 1.25x to
+// rewrite the cache every round to save characters it had already cached at
+// 0.1x, which is worse than not folding at all.
+//
+// Quantizing the boundary to a step fixes it: the folded prefix is byte-
+// identical for STEP consecutive rounds, so the cache is written once and read
+// for the rest of them. The cost is keeping up to KEEP_WHOLE + STEP - 1 messages
+// whole instead of exactly KEEP_WHOLE, which is a longer verbatim window for the
+// agent and not a regression.
+const KEEP_WHOLE = 6          // the last N messages keep their results verbatim
+const FOLD_STEP = 8           // ...and the boundary only moves every N messages
+const FOLD_TO = 600           // how much of an older result survives
+
+export function foldOldToolResults (messages) {
+  const cut = Math.floor((messages.length - KEEP_WHOLE) / FOLD_STEP) * FOLD_STEP
+  if (cut <= 0) return messages
+  let folded = 0
+  const out = messages.map((m, i) => {
+    if (i >= cut || !Array.isArray(m.parts)) return m
+    let touched = false
+    const parts = m.parts.map(p => {
+      if (p.type !== 'tool' || typeof p.result !== 'string' || p.result.length <= FOLD_TO) return p
+      touched = true
+      folded += p.result.length - FOLD_TO
+      return {
+        ...p,
+        result: p.result.slice(0, FOLD_TO) +
+          `\n\n[… ${p.result.length - FOLD_TO} more characters from this earlier ${p.name} were trimmed to keep the conversation small. Run it again if you need the rest.]`
+      }
+    })
+    return touched ? { ...m, parts } : m
+  })
+  return folded ? out : messages
+}
+
 // ---------- single API round, streaming; returns {parts, stopOnTools} ----------
 // ⚠️ ONE SLIDER, THREE DIFFERENT PARAMETERS. Radiant never asked for a thinking
 // level at all — it rendered whatever reasoning came back and let every model run
@@ -214,13 +324,34 @@ export const EFFORTS = ['auto', 'low', 'medium', 'high']
 // its own, so max_tokens is raised alongside rather than eaten into.
 const THINK_BUDGET = { low: 2048, medium: 6144, high: 12288 }
 
-async function anthropicRound ({ baseUrl, apiKey, accessToken, model, messages, system, tools, toolDefs, effort, emit, signal }) {
+async function anthropicRound ({ baseUrl, apiKey, accessToken, model, messages, systemStable, systemVolatile, tools, toolDefs, effort, cachingEnabled, cacheTtl, emit, signal }) {
   // Subscription (OAuth) requests must present as Claude Code: the first system
   // block is the CLI's identity, auth is Bearer, and the oauth beta is set.
   const CLAUDE_CODE_ID = "You are Claude Code, Anthropic's official CLI for Claude."
-  const sys = accessToken
-    ? [{ type: 'text', text: CLAUDE_CODE_ID }, { type: 'text', text: system }]
-    : system
+  // Prompt caching, on by default (Settings → caching toggle) but skippable —
+  // some Anthropic-compatible baseUrls reject cache_control, and single-shot
+  // (non-conversational) turns get zero benefit from a cache write.
+  // ⚠️ ONLY THE STABLE HALF GETS THE MARKER. Anthropic renders tools -> system
+  // -> messages, so a breakpoint on the last block of the stable system text
+  // caches tool definitions too. The volatile half (memory / plan addendum —
+  // see systemPrompt()'s comment) is appended as a SEPARATE, unmarked system
+  // block after it: still sent every turn, but its churn can't invalidate the
+  // marked prefix before it. System must be block form (not a bare string) for
+  // cache_control to attach.
+  // Anthropic renders tools BEFORE system, and a breakpoint on the last system
+  // block caches both together — so the minimum-cacheable-length check has to
+  // count tool definitions too, not just the (often short on its own) stable
+  // system text. Measuring systemStable alone under-counts the real prefix and
+  // wrongly skips caching on a normal tool-using turn.
+  const toolDefsForBody = tools ? (toolDefs || TOOL_DEFS).map(t => ({ name: t.name, description: t.description, input_schema: t.input_schema })) : null
+  const prefixTokens = roughTokens(systemStable) + (toolDefsForBody ? roughTokens(JSON.stringify(toolDefsForBody)) : 0)
+  const useCaching = cachingEnabled !== false && prefixTokens >= MIN_CACHEABLE_TOKENS
+  const cacheControl = useCaching ? { type: 'ephemeral', ...(cacheTtl === '1h' ? { ttl: '1h' } : {}) } : null
+  const sys = accessToken ? [{ type: 'text', text: CLAUDE_CODE_ID }] : []
+  sys.push(cacheControl
+    ? { type: 'text', text: systemStable, cache_control: cacheControl }
+    : { type: 'text', text: systemStable })
+  if (systemVolatile) sys.push({ type: 'text', text: systemVolatile })
   const body = { model, max_tokens: 8192, system: sys, messages, stream: true }
   // ⚠️ RAISE max_tokens WITH THE BUDGET, do not carve the budget out of it — the
   // thinking budget and the visible reply share this number, so a 12k budget under
@@ -230,13 +361,22 @@ async function anthropicRound ({ baseUrl, apiKey, accessToken, model, messages, 
     body.thinking = { type: 'enabled', budget_tokens: THINK_BUDGET[effort] }
     body.max_tokens = 8192 + THINK_BUDGET[effort]
   }
-  if (tools) body.tools = (toolDefs || TOOL_DEFS).map(t => ({ name: t.name, description: t.description, input_schema: t.input_schema }))
+  if (toolDefsForBody) body.tools = toolDefsForBody
+  // Top-level automatic caching covers the growing conversation tail: Anthropic
+  // places (and walks forward) its own breakpoint on the last cacheable message
+  // block, which is the documented default for multi-turn conversations and
+  // avoids hand-tracking positions against the 20-block lookback window
+  // ourselves (shared/prompt-caching.md, "Automatic vs explicit breakpoints" +
+  // "The robust combination for agent loops"). Composes with the explicit
+  // system-block marker above (2 of the 4 available breakpoint slots used).
+  if (useCaching && messages.length) body.cache_control = cacheControl
   const headers = { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' }
   if (accessToken) {
     headers.authorization = `Bearer ${accessToken}`
-    headers['anthropic-beta'] = 'oauth-2025-04-20,claude-code-20250219'
+    headers['anthropic-beta'] = ['oauth-2025-04-20', 'claude-code-20250219', ...(cacheTtl === '1h' ? ['extended-cache-ttl-2025-04-11'] : [])].join(',')
   } else {
     headers['x-api-key'] = apiKey
+    if (cacheTtl === '1h') headers['anthropic-beta'] = 'extended-cache-ttl-2025-04-11'
   }
   const res = await fetch(`${baseUrl}/v1/messages`, {
     method: 'POST',
@@ -250,7 +390,14 @@ async function anthropicRound ({ baseUrl, apiKey, accessToken, model, messages, 
   let current = null // {type:'text',text} or {type:'tool',id,name,json}
   let stopReason = null
   for await (const ev of sseEvents(res)) {
-    if (ev.type === 'message_start' && ev.message?.usage) emit({ type: 'usage', input: ev.message.usage.input_tokens, output: 0 })
+    if (ev.type === 'message_start' && ev.message?.usage) {
+      // With caching on, `input_tokens` is only the uncached remainder — cached
+      // reads/writes land in separate fields. Sum all three so the context-window
+      // gauge still reflects the true prompt size, not just what was billed fresh.
+      const u = ev.message.usage
+      const totalIn = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0)
+      emit({ type: 'usage', input: totalIn, output: 0 })
+    }
     else if (ev.type === 'content_block_start') {
       const b = ev.content_block
       if (b.type === 'text') current = { type: 'text', text: '' }
@@ -280,12 +427,41 @@ async function anthropicRound ({ baseUrl, apiKey, accessToken, model, messages, 
   return { parts, stopOnTools: stopReason === 'tool_use' }
 }
 
-async function openaiRound ({ baseUrl, apiKey, accessToken, model, messages, tools, toolDefs, extraHeaders, effort, emit, signal }) {
+// OpenRouter passes Anthropic-style cache_control breakpoints through to Claude
+// models routed via Anthropic on its /chat/completions endpoint (confirmed against
+// OpenRouter's current docs, "Explicit per-block cache_control breakpoints work
+// across all Anthropic-compatible providers"). Mirrors PR #3's two-breakpoint
+// pattern: mark the system prefix and the tail message. OpenAI itself and every
+// other openaiRound-routed provider (plain OpenAI, Ollama, LM Studio, Copilot,
+// xAI, etc.) get NO markers here — OpenAI's own caching is automatic/implicit and
+// needs no client marker (see openaiRound's usage-observability comment below),
+// and other providers may reject an unrecognized `cache_control` field outright.
+function withOpenRouterClaudeCaching (body, provider, model, cachingEnabled) {
+  // ⚠️ THE SETTING HAS TO REACH EVERY PATH IT CLAIMS TO GOVERN. Settings offers
+  // one switch called "Prompt caching (Claude models)", and OpenRouter's Claude
+  // models are Claude models. Reading cachingEnabled in anthropicRound alone
+  // would leave this path caching after the user turned caching off — a switch
+  // that governs one provider and silently not another is worse than no switch,
+  // because the user cannot tell which half they got.
+  if (cachingEnabled === false) return
+  if (provider?.id !== 'openrouter' || !/claude/i.test(model || '')) return
+  const ephemeral = { type: 'ephemeral' }
+  const asBlock = content => typeof content === 'string'
+    ? [{ type: 'text', text: content, cache_control: ephemeral }]
+    : content
+  const sys = body.messages.find(m => m.role === 'system')
+  if (sys) sys.content = asBlock(sys.content)
+  const last = body.messages[body.messages.length - 1]
+  if (last && last !== sys && typeof last.content === 'string') last.content = asBlock(last.content)
+}
+
+async function openaiRound ({ baseUrl, apiKey, accessToken, model, messages, tools, toolDefs, extraHeaders, effort, provider, cachingEnabled, emit, signal }) {
   const body = { model, messages, stream: true }
   if (effort && effort !== 'auto') body.reasoning_effort = effort
   if (tools) {
     body.tools = (toolDefs || TOOL_DEFS).map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } }))
   }
+  withOpenRouterClaudeCaching(body, provider, model, cachingEnabled)
   const headers = { 'content-type': 'application/json', ...(extraHeaders || {}) }
   const bearer = accessToken || apiKey
   if (bearer) headers.authorization = `Bearer ${bearer}`
@@ -297,7 +473,17 @@ async function openaiRound ({ baseUrl, apiKey, accessToken, model, messages, too
   let finish = null
   for await (const chunk of sseEvents(res)) {
     const choice = chunk.choices?.[0]
-    if (chunk.usage) emit({ type: 'usage', input: chunk.usage.prompt_tokens, output: chunk.usage.completion_tokens })
+    if (chunk.usage) {
+      // Unlike Anthropic, OpenAI-family cached_tokens is a SUBSET of prompt_tokens,
+      // not additive — prompt_tokens already reflects the true prefix size, so
+      // there is no under-reporting bug here for the ContextGauge to fix (that was
+      // Anthropic-specific, see anthropicRound). cacheRead is surfaced separately,
+      // purely for a future cache-hit-rate indicator, and is a no-op if the
+      // provider doesn't send prompt_tokens_details (most non-OpenAI/OpenRouter
+      // openaiRound providers won't).
+      const cacheRead = chunk.usage.prompt_tokens_details?.cached_tokens
+      emit({ type: 'usage', input: chunk.usage.prompt_tokens, output: chunk.usage.completion_tokens, ...(cacheRead ? { cacheRead } : {}) })
+    }
     if (!choice) continue
     const d = choice.delta || {}
     const reasoning = d.reasoning_content ?? d.reasoning
@@ -539,9 +725,11 @@ function planBlocked (name) {
 }
 
 // ---------- the agent loop ----------
-export async function runTurn ({ provider, model, apiKey, getAccessToken, getAccountId, session, useTools, computerControl, skills, persona, memory, agentId, groupSpeakerId, groupNames, mcpTools, callMcp, askAgent, peerAgents, planMode, onPlanExit, effort, summarize, autoCompact, autoApproveComputer, emit, requestApproval, requestUserChoice, signal }) {
-  const cwd = session.cwd || os.homedir()
-  const system = systemPrompt(cwd, useTools, model, computerControl, skills, persona, planMode, memory)
+export async function runTurn ({ provider, model, apiKey, getAccessToken, getAccountId, session, useTools, computerControl, skills, persona, planAddendum, memory, agentId, groupSpeakerId, groupNames, mcpTools, callMcp, askAgent, peerAgents, planMode, onPlanExit, effort, summarize, autoCompact, autoApproveComputer, cachingEnabled, cacheTtl, emit, requestApproval, requestUserChoice, signal }) {
+  // ⚠️ NOT `session.cwd || os.homedir()`. A folder that is set and not here is
+  // the case that broke every tool call in the chat — see usableCwd.
+  const { dir: cwd, missing: strayCwd } = usableCwd(session.cwd)
+  const system = systemPrompt(cwd, useTools, model, computerControl, skills, persona, planMode, planAddendum, memory)
   // proactive compaction before a very long turn
   if (autoCompact && summarize && estimateTokens(session.messages) > PROACTIVE_TOKENS) {
     await compactSession(session, 4, summarize, emit)
@@ -562,7 +750,16 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
   const emitRaw = emit
   emit = ev => {
     if (ev.type === 'notice' && ev.text) assistant.parts.push({ type: 'notice', text: ev.text })
+    // ⚠️ A HALT MUST SURVIVE THE STREAM CLOSING, same as a notice — it is the
+    // only thing in the transcript that says the turn is not finished.
+    if (ev.type === 'halt') assistant.parts.push({ type: 'halt', reason: ev.reason, text: ev.text })
     emitRaw(ev)
+  }
+  // After the wrapper, so it is written into the transcript and not just
+  // streamed: this is the sentence that explains every odd path in the turn
+  // below, and it has to still be there when the turn is read back.
+  if (strayCwd) {
+    emit({ type: 'notice', text: `This chat's folder is not on this Mac — ${strayCwd} — so it is working in ${cwd} instead. That usually means the chat was started on another Mac; pick a folder for it in the header to make it stick here.` })
   }
   let compacted = false
 
@@ -605,6 +802,14 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
   // per-session stats (folded into session.stats)
   const stats = session.stats || { turns: 0, inTokens: 0, outTokens: 0, llmMs: 0, toolMs: 0 }
   stats.turns += 1
+  // ⚠️ THIS COUNTER IS THE SESSION'S WHOLE LIFE, NOT THIS TURN'S. I added a
+  // "per turn" ceiling and compared it against the running total, so a chat that
+  // had ever spent more than the limit halted INSTANTLY on every turn after —
+  // zero tool calls, no work, and "keep going" could never do anything. Tony's
+  // chat had 29.8M tokens behind it against a 2M limit: permanently bricked, and
+  // strictly worse than the round cap it replaced. Take the mark at the start
+  // and measure the difference.
+  const tokensBefore = (stats.inTokens || 0) + (stats.outTokens || 0)
   const emitS = ev => { if (ev.type === 'usage') { stats.inTokens += ev.input || 0; stats.outTokens += ev.output || 0 } emit(ev) }
   const finishStats = () => { session.stats = stats; emit({ type: 'stats', stats }) }
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -617,13 +822,28 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
     // Aborting returns cleanly rather than throwing: the partial answer is real
     // work and belongs in the transcript.
     if (signal?.aborted) { finishStats(); emit({ type: 'stopped' }); return }
+    // The economic backstop. A round count never measured cost; this does.
+    if ((stats.inTokens + stats.outTokens) - tokensBefore > MAX_TURN_TOKENS) {
+      finishStats()
+      emit({
+        type: 'halt',
+        reason: 'budget',
+        text: `This turn has used ${Math.round(((stats.inTokens + stats.outTokens) - tokensBefore) / 1e6 * 10) / 10}M tokens and was stopped before it spent more. Everything above is saved; Continue starts a fresh turn from here, which also costs less because the conversation gets summarized.`
+      })
+      emit({ type: 'done' })
+      return
+    }
     emit({ type: 'round_start', round })
     const args = {
       baseUrl: provider.baseUrl,
       apiKey,
       accessToken,
       model,
-      system,
+      provider,
+      systemStable: system.stable,
+      systemVolatile: system.volatile,
+      cachingEnabled,
+      cacheTtl,
       tools: toolsEnabled,
       toolDefs,
       extraHeaders: provider.id === 'copilot' ? COPILOT_HEADERS : undefined,
@@ -634,12 +854,12 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
     let result
     const roundStart = Date.now()
     try {
-      const reqMsgs = groupSpeakerId ? groupFlatten(session.messages, groupSpeakerId, groupNames || {}) : session.messages
+      const reqMsgs = foldOldToolResults(groupSpeakerId ? groupFlatten(session.messages, groupSpeakerId, groupNames || {}) : session.messages)
       result = provider.type === 'anthropic'
         ? await anthropicRound({ ...args, messages: toAnthropic(reqMsgs) })
         : useChatgpt
-          ? await chatgptRound({ ...args, accountId, messages: reqMsgs })
-          : await openaiRound({ ...args, messages: toOpenAI(reqMsgs, system) })
+          ? await chatgptRound({ ...args, system: system.full, accountId, messages: reqMsgs })
+          : await openaiRound({ ...args, messages: toOpenAI(reqMsgs, system.full) })
       stats.llmMs += Date.now() - roundStart
     } catch (e) {
       // Model doesn't support tools (common with local models) -> retry once without them.
@@ -791,13 +1011,75 @@ export async function runTurn ({ provider, model, apiKey, getAccessToken, getAcc
       repeatCount = sig === lastSig ? repeatCount + 1 : 1
       lastSig = sig
       if (REPEAT_NUDGES[repeatCount]) part.result = `[reminder: ${REPEAT_NUDGES[repeatCount]}]\n\n${part.result ?? ''}`
+      // ⚠️ THE NUDGE WAS THE WHOLE ENFORCEMENT, AND A NUDGE IS A SUGGESTION. An
+      // agent that has made the identical call twelve times has been told three
+      // times to stop and has not. This is what a runaway actually looks like —
+      // not "used a lot of rounds getting work done".
+      if (repeatCount >= STUCK_AT) {
+        emit({ type: 'tool_result', id: call.id, result: part.result, denied: !approved, hasImage: Boolean(part.resultImage) })
+        stats.toolMs += Date.now() - toolLoopStart
+        finishStats()
+        emit({
+          type: 'halt',
+          reason: 'stuck',
+          text: `The agent called ${call.name} the same way ${repeatCount} times in a row and was not getting anywhere, so the turn was stopped. Everything above is saved. Continue picks it up, but it is worth telling it to try something different.`
+        })
+        emit({ type: 'done' })
+        return
+      }
       emit({ type: 'tool_result', id: call.id, result: part.result, denied: !approved, hasImage: Boolean(part.resultImage) })
     }
     stats.toolMs += Date.now() - toolLoopStart
     if (signal?.aborted) { finishStats(); emit({ type: 'stopped' }); return }
   }
+  // ⚠️ THE LIMIT USED TO END THE TURN MID-AIR, AND THE ONLY TRACE WAS AN ITALIC
+  // GREY LINE. Tony, looking at a chat that had just done this: "the chat has
+  // failed again. with no warning. why is this happening. how can a user rely on
+  // this app if chats just stop with no warning and no explanation." He is right
+  // — "Stopped after 30 tool rounds." is 12px, faint, italic, and it landed at
+  // the bottom of thirty-five tool chips. It is also not an explanation: it says
+  // what the code did, not what the agent was doing, what got done, or what to
+  // do next.
+  //
+  // So the last thing a spent turn does is ASK. One more call with the tools
+  // taken away — it cannot loop again, that is the point — for a plain account
+  // of where it got to. That reply is the explanation, in the agent's own words,
+  // about this specific piece of work. Then the halt, which the client renders
+  // as a real block with a Continue button rather than a whisper.
+  if (!signal?.aborted) {
+    try {
+      const wrapUp = {
+        role: 'user',
+        text: `You have used this turn's limit of ${MAX_ROUNDS} rounds of tool use and cannot call any more tools. Do not call a tool. In 2-4 plain sentences tell the user: what you were trying to do, what is actually finished, what is not, and what would unblock it. If you were stuck repeating something that did not work, say so and say why.`
+      }
+      const msgs = [...session.messages, wrapUp]
+      const args = {
+        baseUrl: provider.baseUrl, apiKey, accessToken, model, system,
+        tools: false, toolDefs: [],
+        extraHeaders: provider.id === 'copilot' ? COPILOT_HEADERS : undefined,
+        effort, emit: emitS, signal
+      }
+      const wrapStart = Date.now()
+      const said = provider.type === 'anthropic'
+        ? await anthropicRound({ ...args, messages: toAnthropic(msgs) })
+        : useChatgpt
+          ? await chatgptRound({ ...args, accountId, messages: msgs })
+          : await openaiRound({ ...args, messages: toOpenAI(msgs, system) })
+      stats.llmMs += Date.now() - wrapStart
+      for (const p of said.parts) if (p.type === 'text') assistant.parts.push(p)
+    } catch (e) {
+      // ⚠️ NEVER LET THE EXPLANATION BE THE THING THAT FAILS. Whatever went
+      // wrong here, the halt below still has to reach the user — that is the
+      // entire bug being fixed.
+      console.warn('[radiant] wrap-up after the round limit failed:', e.message)
+    }
+  }
   finishStats()
-  emit({ type: 'notice', text: `Stopped after ${MAX_ROUNDS} tool rounds.` })
+  emit({
+    type: 'halt',
+    reason: 'rounds',
+    text: `This turn used its limit of ${MAX_ROUNDS} rounds of tool use and stopped. Nothing is lost — everything above is saved, and Continue picks it up from here.`
+  })
   emit({ type: 'done' })
 }
 

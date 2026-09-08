@@ -37,15 +37,59 @@ const LOOP_LOOK = {
   done: 'Finished'
 }
 
-// Three stages, and the order is the argument: what you want, how it breaks up,
-// and then a chance to read it back before anything exists.
+/**
+ * ⚠️ A LOOP CAN NOW FAIL WITH EVERY STEP PASSED. The goal check is the whole
+ * point of that: each unit was correct and the run still did not achieve
+ * anything. Saying "a step could not pass its check" there sends the reader
+ * hunting for a failed step, finds them all green, and reads as a bug in the app
+ * rather than a verdict about the work.
+ */
+function loopLabel (loop) {
+  if (loop.state !== 'failed') return LOOP_LOOK[loop.state]
+  return loop.steps.some(s => s.state === 'failed')
+    ? LOOP_LOOK.failed
+    : 'Stopped — every step passed but the goal did not'
+}
+
+// Four stages, and the order is the argument: what you want, how it breaks up,
+// how you will know it worked, and then a chance to read it back before anything
+// exists.
 const STAGES = [
   { id: 'goal', label: 'The goal' },
   { id: 'steps', label: 'The steps' },
+  { id: 'finish', label: 'Done, and how often' },
   { id: 'review', label: 'Check it over' }
 ]
 
-const blankStep = () => ({ title: '', prompt: '', check: '', agentId: null, model: null, provider: null, checkAgentId: null, maxAttempts: 3 })
+// How often a loop may start itself. `0` is the honest default: nothing runs
+// until you press Run.
+const EVERY = [
+  { id: 0, label: 'Only when I run it' },
+  { id: 15, label: 'Every 15 min' },
+  { id: 60, label: 'Hourly' },
+  { id: 60 * 24, label: 'Daily' }
+]
+
+// ⚠️ NARROW ON PURPOSE, AND DELIBERATELY NOT THE SERVER'S commandRisk. That one
+// answers "does this need an approval prompt", and it answers by allowlist —
+// which makes `npm test` high risk, so wiring it in here would fire a warning on
+// the single most common check anybody writes and teach people to ignore it.
+// This asks a smaller question: does the thing you are about to run unattended,
+// on a timer, look like it CHANGES something? A check should only ever read.
+const DESTRUCTIVE = /\brm\s+-|\bsudo\b|\bdd\s+if=|\bmkfs|\bshutdown\b|\breboot\b|\bgit\s+push\b|\bgit\s+reset\s+--hard\b|\bgit\s+clean\b|\bnpm\s+publish\b|\byarn\s+publish\b|>\s*\/(dev|etc|usr|bin|sys)\b|\|\s*(sudo\s+)?(sh|bash|zsh)\b/i
+
+const blankStep = () => ({ title: '', prompt: '', check: '', checkCommand: '', agentId: null, model: null, provider: null, checkAgentId: null, maxAttempts: 3 })
+
+/** Does anything at all verify this step? */
+const isChecked = s => Boolean((s.check || '').trim() || (s.checkCommand || '').trim())
+
+// "every 1 hour" is not how anyone says it. One of anything drops the number.
+const everyLabel = mins => {
+  const unit = (n, word) => (n === 1 ? word : `${n} ${word}s`)
+  if (mins % (60 * 24) === 0) return unit(mins / (60 * 24), 'day')
+  if (mins % 60 === 0) return unit(mins / 60, 'hour')
+  return `${mins} min`
+}
 
 function whoLabel (step, agents) {
   if (step.agentId) {
@@ -76,12 +120,20 @@ function StepRow ({ step, index, agents, running, onOpen }) {
           )}
           {attemptsShown && <span className='lp-step-tries'>· attempt {step.attempts} of {step.maxAttempts}</span>}
         </div>
-        {step.check
-          ? <div className='lp-step-check'><span className='lp-check-lead'>Passes when</span> {step.check}</div>
-          /* ⚠️ SAY IT OUT LOUD. A step with no condition is finished the moment
-             the model stops, which is exactly the weakness a loop exists to fix.
-             Silently treating that as success is how the layer becomes theatre. */
-          : <div className='lp-step-check lp-step-nocheck'>No check — this step is done when the agent stops. Nothing verifies it.</div>}
+        {/* The deterministic half first, because that is the order it runs in
+            and the order it deserves to be read in. */}
+        {step.checkCommand && (
+          <div className='lp-step-check'><span className='lp-check-lead'>Passes when</span> <code>{step.checkCommand}</code> exits 0</div>
+        )}
+        {step.check && (
+          <div className='lp-step-check'><span className='lp-check-lead'>{step.checkCommand ? 'and when' : 'Passes when'}</span> {step.check}</div>
+        )}
+        {/* ⚠️ SAY IT OUT LOUD. A step with no condition is finished the moment
+            the model stops, which is exactly the weakness a loop exists to fix.
+            Silently treating that as success is how the layer becomes theatre. */}
+        {!isChecked(step) && (
+          <div className='lp-step-check lp-step-nocheck'>No check — this step is done when the agent stops. Nothing verifies it.</div>
+        )}
         {step.lastFail && step.state !== 'passed' && (
           <div className='lp-step-fail'>Last check said: {step.lastFail}</div>
         )}
@@ -119,11 +171,36 @@ function StepEditor ({ step, index, agents, pickable, onChange, onRemove, onRefr
         aria-label={`Step ${index + 1} detail`}
         rows={2}
       />
+      {/* ⚠️ THE COMMAND GOES ABOVE THE SENTENCE, because that is the order it
+          runs in and the order it deserves. This box used to say "e.g. npm test
+          exits 0" and then hand the question to a model — the app recommending a
+          condition a program could evaluate and then guessing at it. */}
       <label className='lp-field'>
-        <span className='lp-field-label'>This step passes when…</span>
+        <span className='lp-field-label'>This step passes when this command exits 0 <i>(optional)</i></span>
+        <input
+          className='lp-input lp-check-input lp-cmd-input'
+          placeholder='e.g. npm test'
+          value={step.checkCommand || ''}
+          onChange={e => set({ checkCommand: e.target.value })}
+          aria-label={`Step ${index + 1} check command`}
+          spellCheck={false}
+        />
+        <span className='lp-field-hint'>
+          {step.checkCommand.trim()
+            ? 'Runs in the working folder. Exit 0 passes; anything else fails, and what it printed goes back with the retry as the evidence. It is checked before any agent is asked, so a failing command costs nothing.'
+            : 'A command that exits 0 is the only kind of check that cannot be argued with. Two models agreeing is not a check.'}
+        </span>
+        {DESTRUCTIVE.test(step.checkCommand || '') && (
+          <span className='lp-warn lp-warn-inline'>
+            That looks like it changes something. A check should only read — and on a schedule it runs with nobody watching.
+          </span>
+        )}
+      </label>
+      <label className='lp-field'>
+        <span className='lp-field-label'>…and when an agent agrees that <i>(optional)</i></span>
         <input
           className='lp-input lp-check-input'
-          placeholder='e.g. npm test exits 0 and src/export.js exists'
+          placeholder='e.g. the export handles empty rows and is covered by a test'
           value={step.check}
           onChange={e => set({ check: e.target.value })}
           aria-label={`Step ${index + 1} check`}
@@ -132,8 +209,10 @@ function StepEditor ({ step, index, agents, pickable, onChange, onRemove, onRefr
             the box rather than in a Read me nobody has open. */}
         <span className='lp-field-hint'>
           {step.check.trim()
-            ? 'Name something checkable — a command that exits 0, a file that exists. "It looks right" is an opinion, and an opinion is what a loop exists to replace.'
-            : 'Leave it empty and this step is done the moment the agent stops talking. Nothing will verify it.'}
+            ? 'Name something checkable. "It looks right" is an opinion, and an opinion is what a loop exists to replace.'
+            : step.checkCommand.trim()
+              ? 'Fine to leave empty — the command above is the check, and it is the stronger of the two.'
+              : 'Leave both empty and this step is done the moment the agent stops talking. Nothing will verify it.'}
         </span>
       </label>
       <div className='lp-edit-foot'>
@@ -183,7 +262,7 @@ export default function LoopBoard ({
   const [loading, setLoading] = useState(true)
   const [composing, setComposing] = useState(false)
   const [editingId, setEditingId] = useState(null)
-  const [draft, setDraft] = useState({ title: '', detail: '', cwd: '', steps: [blankStep()] })
+  const [draft, setDraft] = useState({ title: '', detail: '', cwd: '', steps: [blankStep()], goalCheck: '', goalCommand: '', maxPasses: 1, everyMinutes: 0 })
   // ⚠️ ONE QUESTION AT A TIME. The first version put the goal, the folder, every
   // step, every model and every check on one screen — which is a form, not an
   // explanation, and a loop is a new idea that needs one. Tony asked for a
@@ -212,14 +291,23 @@ export default function LoopBoard ({
   ], [agents, models])
 
   const startDraft = () => {
-    setDraft({ title: '', detail: '', cwd: defaultCwd || '', steps: [blankStep()] })
+    setDraft({ title: '', detail: '', cwd: defaultCwd || '', steps: [blankStep()], goalCheck: '', goalCommand: '', maxPasses: 1, everyMinutes: 0 })
     setEditingId(null)
     setStage(0)
     setComposing(true)
   }
 
   const editLoop = loop => {
-    setDraft({ title: loop.title, detail: loop.detail || '', cwd: loop.cwd || '', steps: loop.steps.map(s => ({ ...s })) })
+    setDraft({
+      title: loop.title,
+      detail: loop.detail || '',
+      cwd: loop.cwd || '',
+      steps: loop.steps.map(s => ({ ...s, checkCommand: s.checkCommand || '' })),
+      goalCheck: loop.goalCheck || '',
+      goalCommand: loop.goalCommand || '',
+      maxPasses: loop.maxPasses || 1,
+      everyMinutes: loop.schedule?.everyMinutes || 0
+    })
     setEditingId(loop.id)
     // Editing an existing loop starts on the steps: you know what it is for.
     setStage(1)
@@ -230,7 +318,18 @@ export default function LoopBoard ({
     e?.preventDefault?.()
     const steps = draft.steps.filter(s => s.title.trim())
     if (!draft.title.trim() || !steps.length) return
-    const body = { title: draft.title.trim(), detail: draft.detail.trim(), cwd: draft.cwd.trim() || null, steps }
+    const body = {
+      title: draft.title.trim(),
+      detail: draft.detail.trim(),
+      cwd: draft.cwd.trim() || null,
+      steps,
+      goalCheck: draft.goalCheck.trim(),
+      goalCommand: draft.goalCommand.trim(),
+      // ⚠️ ONE PASS UNLESS A GOAL CHECK EXISTS TO SEND IT BACK. Passes with
+      // nothing judging them is just the same work twice at twice the price.
+      maxPasses: (draft.goalCheck.trim() || draft.goalCommand.trim()) ? draft.maxPasses : 1,
+      schedule: draft.everyMinutes > 0 ? { everyMinutes: draft.everyMinutes } : null
+    }
     try {
       if (editingId) await api.patchLoop(editingId, body)
       else await api.createLoop(body)
@@ -247,10 +346,15 @@ export default function LoopBoard ({
   const addStep = () => setDraft(d => ({ ...d, steps: [...d.steps, blankStep()] }))
   const removeStep = i => setDraft(d => ({ ...d, steps: d.steps.filter((_, j) => j !== i) }))
 
-  const uncheckedSteps = draft.steps.filter(s => s.title.trim() && !s.check.trim()).length
+  const uncheckedSteps = draft.steps.filter(s => s.title.trim() && !isChecked(s)).length
+  const hasGoal = Boolean(draft.goalCheck.trim() || draft.goalCommand.trim())
   // ⚠️ NEXT IS DISABLED, NOT SILENTLY BROKEN. A walkthrough that lets you past a
   // stage you have not filled in and then refuses at the end is worse than a form.
-  const stageReady = stage === 0 ? Boolean(draft.title.trim()) : draft.steps.some(s => s.title.trim())
+  const stageReady = stage === 0
+    ? Boolean(draft.title.trim())
+    // Stage 2 is all optional — a loop with no goal check is the old behaviour,
+    // and refusing to move past a stage that asks for nothing is a dead end.
+    : stage === 2 ? true : draft.steps.some(s => s.title.trim())
   // Next, Create, and Enter in a field are all the same move.
   const advance = () => {
     if (!stageReady) return
@@ -261,18 +365,20 @@ export default function LoopBoard ({
   return (
     <section className='lp' aria-label='Loops'>
       <header className='lp-head'>
-        <div>
-          <h2 className='lp-title'>Loops</h2>
-          <p className='lp-sub'>
-            A run of steps with a check on each. A step that fails its check goes
-            round again with the reason attached. Steps run as ordinary chats, so
-            a loop waits at an approval prompt like anything else does.
-          </p>
-        </div>
+        <h2 className='lp-title'>Loops</h2>
+        <p className='lp-sub'>
+          A run of steps with a check on each. A step that fails its check goes
+          round again with the reason attached — and a check can be a command that
+          has to exit 0, which is the only kind that cannot be argued with. Steps
+          run as ordinary chats, so a loop waits at an approval prompt like
+          anything else does.
+        </p>
+      </header>
+      <div className='view-actions'>
         <button className='rx-btn rx-btn-go' onClick={() => (composing ? setComposing(false) : startDraft())}>
           {composing ? 'Cancel' : 'New loop'}
         </button>
-      </header>
+      </div>
 
       {/* ⚠️ REFERENCE, NOT DECORATION — so it goes away once you are working. It
           is here because "loop" is a word people think they already know; the
@@ -355,6 +461,87 @@ export default function LoopBoard ({
 
           {stage === 2 && (
             <div className='lp-panel'>
+              <h3 className='lp-panel-title'>How you will know it worked</h3>
+              {/* ⚠️ THIS IS THE CEILING OF THE STEP-WISE LOOP, STATED ON THE
+                  SCREEN. Each step verifying itself makes each unit correct and
+                  cannot notice the units were the wrong ones — a very good agent
+                  running the wrong three steps, every one of them checked. */}
+              <p className='lp-panel-lead'>
+                Every step passing is not the same as the goal being met. A goal check
+                judges the whole run once at the end; when it fails, the loop starts
+                over from step one carrying the reason. All of this is optional — leave
+                it empty and the loop finishes when the last step passes.
+              </p>
+              <label className='lp-field'>
+                <span className='lp-field-label'>The goal is met when this command exits 0 <i>(optional)</i></span>
+                <input
+                  className='lp-input lp-check-input lp-cmd-input'
+                  placeholder='e.g. npm run build && npm test'
+                  value={draft.goalCommand}
+                  onChange={e => setDraft(d => ({ ...d, goalCommand: e.target.value }))}
+                  aria-label='Goal check command'
+                  spellCheck={false}
+                />
+                {DESTRUCTIVE.test(draft.goalCommand) && (
+                  <span className='lp-warn lp-warn-inline'>
+                    That looks like it changes something. A check should only read.
+                  </span>
+                )}
+              </label>
+              <label className='lp-field'>
+                <span className='lp-field-label'>…and when an agent agrees that <i>(optional)</i></span>
+                <input
+                  className='lp-input lp-check-input'
+                  placeholder='e.g. a user can export a report and open it in Excel'
+                  value={draft.goalCheck}
+                  onChange={e => setDraft(d => ({ ...d, goalCheck: e.target.value }))}
+                  aria-label='Goal check'
+                />
+                <span className='lp-field-hint'>
+                  Judged in its own conversation, reading the work rather than continuing it.
+                </span>
+              </label>
+              {hasGoal && (
+                <label className='lp-tries lp-field'>
+                  <span className='lp-field-label'>If the goal is not met, run the whole loop again up to</span>
+                  <input
+                    type='number' min='1' max='10'
+                    value={draft.maxPasses}
+                    onChange={e => setDraft(d => ({ ...d, maxPasses: Number(e.target.value) }))}
+                    aria-label='Maximum passes'
+                  />
+                  <span className='lp-field-hint'>
+                    {draft.maxPasses > 1
+                      ? 'times in total. Each pass is every step again, so this multiplies what the loop costs.'
+                      : 'times in total — which is once, so the check reports and does not retry. Raise it and a missed goal sends the loop back to step one.'}
+                  </span>
+                </label>
+              )}
+
+              <h3 className='lp-panel-title lp-panel-title-2'>When should it run?</h3>
+              <div className='lp-every' role='group' aria-label='How often this loop runs'>
+                {EVERY.map(o => (
+                  <button
+                    key={o.id} type='button'
+                    className={'rx-btn rx-btn-seg' + (draft.everyMinutes === o.id ? ' on' : '')}
+                    onClick={() => setDraft(d => ({ ...d, everyMinutes: o.id }))}
+                  >{o.label}</button>
+                ))}
+              </div>
+              {/* ⚠️ THE HONEST SENTENCE GOES NEXT TO THE CONTROL. Turns run through
+                  the chat view, so a schedule cannot fire with the app quit. A
+                  timer that quietly does not fire is the worst possible version of
+                  this, and burying the caveat in a Read me is how that happens. */}
+              <p className='lp-field-hint'>
+                {draft.everyMinutes > 0
+                  ? 'Radiant has to be open — it runs the turns, which is what lets you watch and interrupt them. It will switch to the chat and run there. Two runs in a row that do not finish switch this back off rather than repeating the same failure all night.'
+                  : 'Nothing starts on its own. A schedule only fires while Radiant is open, because the app runs the turns.'}
+              </p>
+            </div>
+          )}
+
+          {stage === 3 && (
+            <div className='lp-panel'>
               <h3 className='lp-panel-title'>Here is what will run</h3>
               <p className='lp-panel-lead'>
                 Read it once. Nothing has happened yet — creating a loop does not start it.
@@ -367,8 +554,15 @@ export default function LoopBoard ({
                     <li key={st.id || i}>
                       <b>{st.title}</b>
                       <span className='lp-review-who'>{whoLabel(st, agents)}</span>
-                      {st.check.trim()
-                        ? <span className='lp-review-check'>Passes when {st.check} · up to {st.maxAttempts} attempt{st.maxAttempts === 1 ? '' : 's'}</span>
+                      {isChecked(st)
+                        ? (
+                          <span className='lp-review-check'>
+                            Passes when {[
+                              st.checkCommand.trim() && `${st.checkCommand.trim()} exits 0`,
+                              st.check.trim()
+                            ].filter(Boolean).join(', and when ')} · up to {st.maxAttempts} attempt{st.maxAttempts === 1 ? '' : 's'}
+                          </span>
+                        )
                         : <span className='lp-review-nocheck'>No check — done the moment the agent stops. Nothing verifies it.</span>}
                     </li>
                   ))}
@@ -378,6 +572,28 @@ export default function LoopBoard ({
                 <p className='lp-warn'>
                   {uncheckedSteps} step{uncheckedSteps === 1 ? '' : 's'} without a check. You can create it anyway —
                   it just means {uncheckedSteps === 1 ? 'that step is' : 'those steps are'} taken on trust.
+                </p>
+              )}
+              {hasGoal && (
+                <p className='lp-review-goalcheck'>
+                  Then the whole run is judged: it is done when {[
+                    draft.goalCommand.trim() && `${draft.goalCommand.trim()} exits 0`,
+                    draft.goalCheck.trim()
+                  ].filter(Boolean).join(', and when ')}.{' '}
+                  {/* ⚠️ ONE PASS MEANS IT DOES NOT RUN AGAIN, so saying "runs again, up to
+                      1 pass" is a sentence that contradicts itself in its own second half.
+                      A goal check at one pass is still worth having — it is the difference
+                      between being told the run missed and being told it succeeded — but
+                      it is a verdict, not a loop, and the review has to say which. */}
+                  {draft.maxPasses > 1
+                    ? `If it is not, every step runs again — up to ${draft.maxPasses} passes in total.`
+                    : 'If it is not, the loop stops and tells you what is still missing. Raise the pass count to have it try again.'}
+                </p>
+              )}
+              {draft.everyMinutes > 0 && (
+                <p className='lp-review-goalcheck'>
+                  It will start itself {(EVERY.find(o => o.id === draft.everyMinutes)?.label || '').toLowerCase()},
+                  while Radiant is open.
                 </p>
               )}
               <p className='lp-panel-lead'>
@@ -435,7 +651,11 @@ export default function LoopBoard ({
                 <div>
                   <h3 className='lp-card-title'>{loop.title}</h3>
                   <div className='lp-card-state'>
-                    {LOOP_LOOK[loop.state]} · {done} of {loop.steps.length} passed
+                    {loopLabel(loop)} · {done} of {loop.steps.length} passed
+                    {/* Which time round this is. Silent on a one-pass loop, which
+                        is most of them, so it only appears when it means something. */}
+                    {loop.maxPasses > 1 && <span> · pass {loop.pass || 1} of {loop.maxPasses}</span>}
+                    {loop.schedule && <span className='lp-card-every'> · every {everyLabel(loop.schedule.everyMinutes)}</span>}
                     {loop.cwd && <span className='lp-card-cwd'> · {loop.cwd}</span>}
                   </div>
                 </div>
@@ -458,6 +678,22 @@ export default function LoopBoard ({
                   sit there looking busy. */}
               {isRunning && !mine && (
                 <p className='lp-note'>Marked running, but not by this window. Press Run to pick it up.</p>
+              )}
+              {/* ⚠️ A SCHEDULE THAT SWITCHED ITSELF OFF HAS TO SAY SO ON THE CARD.
+                  Otherwise the loop simply stops happening and the only evidence
+                  is an absence, which nobody notices for a week. */}
+              {loop.scheduleOffReason && (
+                <p className='lp-note'>Schedule off. {loop.scheduleOffReason}</p>
+              )}
+              {loop.schedule && !isRunning && loop.nextRunAt && (
+                <p className='lp-note lp-note-quiet'>
+                  Next run {new Date(loop.nextRunAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}, if Radiant is open.
+                </p>
+              )}
+              {/* The goal check is the only thing that can stop a loop whose every
+                  step passed, so its verdict is the one sentence worth surfacing. */}
+              {loop.lastGoalFail && loop.state !== 'running' && (
+                <p className='lp-note'>Every step passed but the goal did not: {loop.lastGoalFail}</p>
               )}
               {/* ⚠️ "WORKING" AND "WAITING FOR YOU" LOOK THE SAME FROM HERE. A step
                   that hit an approval prompt sits in Working, because that is what

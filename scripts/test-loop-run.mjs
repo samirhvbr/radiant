@@ -128,6 +128,130 @@ ok('a loop with no steps is refused', Boolean(empty.error))
 const idle = await j('POST', `/api/loops/${l4.id}/advance`)
 ok('advancing a loop that is not running does nothing', idle.action === 'idle', idle.action)
 
+// ── a command check settles a step without spending a model turn ───────────
+//
+// ⚠️ THIS IS THE WHOLE POINT OF THE DETERMINISTIC HALF. Before it, a step whose
+// condition was "npm test exits 0" was decided by ASKING A MODEL whether npm
+// test had exited 0 — the app recommending something a program could evaluate
+// and then guessing at it. If this ever returns 'check', the command is being
+// treated as advice.
+const c1 = await j('POST', '/api/loops', {
+  title: 'Deterministic', cwd: '/tmp',
+  steps: [{ title: 'Do it', checkCommand: 'true' }, { title: 'And again', checkCommand: 'true' }]
+})
+await j('POST', `/api/loops/${c1.id}/start`)
+let ca = await j('POST', `/api/loops/${c1.id}/advance`)
+ok('a command-checked step still runs its work turn', ca.action === 'work', ca.action)
+ok('and the work prompt names the command it will be held to', ca.prompt.includes('true'))
+say(ca.sessionId, 'Done.')
+ca = await j('POST', `/api/loops/${c1.id}/advance`)
+ok('a passing command settles the step with no model check at all', ca.action === 'work', ca.action)
+ok('and moves to the next step', ca.stepId === c1.steps[1].id)
+say(ca.sessionId, 'Done.')
+ca = await j('POST', `/api/loops/${c1.id}/advance`)
+ok('the last passing command finishes the loop', ca.action === 'done', ca.action)
+
+// ── a failing command retries, carrying its own output as the evidence ─────
+const c2 = await j('POST', '/api/loops', {
+  title: 'Red', cwd: '/tmp',
+  steps: [{ title: 'Make it green', checkCommand: 'echo "expected 302, got 200" >&2; exit 3', maxAttempts: 2 }]
+})
+await j('POST', `/api/loops/${c2.id}/start`)
+let cb = await j('POST', `/api/loops/${c2.id}/advance`)
+say(cb.sessionId, 'I think that is fine.')
+cb = await j('POST', `/api/loops/${c2.id}/advance`)
+// ⚠️ 'work', NOT 'check'. A failing command must never buy a model turn to
+// confirm what the shell already said.
+ok('a failing command goes straight back to the work', cb.action === 'work', cb.action)
+ok('the retry says what exit code it got', cb.prompt.includes('exited 3'), cb.prompt?.slice(0, 200))
+ok('the retry carries the command output as evidence', cb.prompt.includes('expected 302, got 200'))
+// ⚠️ AND IT IS SCOPED. Without this line the returned step grows: the agent
+// opens the file, notices two adjacent problems and fixes those too, turning one
+// known failure into several unverified ones.
+ok('the retry is scoped to the step that failed', cb.prompt.includes('SCOPE:'))
+say(cb.sessionId, 'Tried again.')
+cb = await j('POST', `/api/loops/${c2.id}/advance`)
+ok('a command that will not pass stops the loop at the cap', cb.action === 'failed', cb.action)
+ok('and the step records what the command said',
+   (cb.loop.steps[0].lastFail || '').includes('expected 302, got 200'))
+
+// ── a command that cannot run is not a command that said no ───────────────
+const c3 = await j('POST', '/api/loops', {
+  title: 'Typo', cwd: '/tmp',
+  steps: [{ title: 'Check it', checkCommand: 'nnpm test', maxAttempts: 1 }]
+})
+await j('POST', `/api/loops/${c3.id}/start`)
+let cc = await j('POST', `/api/loops/${c3.id}/advance`)
+say(cc.sessionId, 'Done.')
+cc = await j('POST', `/api/loops/${c3.id}/advance`)
+ok('a command that does not exist fails the step', cc.action === 'failed', cc.action)
+// Through a shell that is exit 127, so it reads as a command that ran and said
+// no — the honest thing is that the user still sees the shell's own words.
+ok('and the reason quotes the shell', /not found|127/.test(cc.loop.steps[0].lastFail || ''),
+   cc.loop.steps[0].lastFail)
+
+// ── the goal check: every step passing is not the goal being met ───────────
+//
+// ⚠️ THE CEILING OF A STEP-WISE LOOP, EXERCISED. Each step here passes its own
+// check on every pass. Only the goal check can see that the run still did not
+// achieve anything, and only sending it back makes that a loop rather than a
+// report.
+const g1 = await j('POST', '/api/loops', {
+  title: 'Reach the goal', cwd: '/tmp',
+  steps: [{ title: 'Work' }],
+  goalCommand: 'exit 1',
+  maxPasses: 2
+})
+ok('a goal command is stored', g1.goalCommand === 'exit 1')
+ok('and the pass count with it', g1.maxPasses === 2 && g1.pass === 1)
+await j('POST', `/api/loops/${g1.id}/start`)
+let ga = await j('POST', `/api/loops/${g1.id}/advance`)
+say(ga.sessionId, 'Did the work.')
+ga = await j('POST', `/api/loops/${g1.id}/advance`)
+ok('a failed goal sends the run back to step one', ga.action === 'work', ga.action)
+ok('and counts it as a second pass', ga.loop.pass === 2, String(ga.loop.pass))
+ok('the second pass knows the goal was missed', ga.prompt.includes('pass 2 of 2'), ga.prompt?.slice(0, 300))
+say(ga.sessionId, 'Did the work again.')
+ga = await j('POST', `/api/loops/${g1.id}/advance`)
+// ⚠️ THE CAP IS THE POINT. A goal that keeps failing must stop, or a loop that
+// can never succeed runs until the money is gone.
+ok('a goal that cannot be met stops at the pass cap', ga.action === 'failed', ga.action)
+ok('and the loop records why it stopped', Boolean(ga.loop.lastGoalFail))
+ok('with no failed STEP to blame, because none of them failed',
+   !ga.loop.steps.some(x => x.state === 'failed'))
+
+// ── a goal judged by an agent ──────────────────────────────────────────────
+const g2 = await j('POST', '/api/loops', {
+  title: 'Judged goal', cwd: '/tmp',
+  steps: [{ title: 'Work' }],
+  goalCheck: 'the report exists and has rows in it'
+})
+await j('POST', `/api/loops/${g2.id}/start`)
+let gb = await j('POST', `/api/loops/${g2.id}/advance`)
+say(gb.sessionId, 'Wrote it.')
+gb = await j('POST', `/api/loops/${g2.id}/advance`)
+ok('the goal check runs as its own turn', gb.action === 'check' && gb.goal === true, gb.action)
+ok('in its own conversation, not the step\'s', gb.sessionId !== g2.steps[0].sessionId)
+ok('and it is told not to re-judge the steps', /already passed/i.test(gb.prompt))
+say(gb.sessionId, 'VERDICT: PASS')
+gb = await j('POST', `/api/loops/${g2.id}/advance`)
+ok('a passing goal finishes the loop', gb.action === 'done', gb.action)
+
+// ── schedules are computed, never stored stale ─────────────────────────────
+const sch = await j('POST', '/api/loops', {
+  title: 'Hourly', steps: [{ title: 'a' }], schedule: { everyMinutes: 60 }
+})
+ok('a schedule is stored', sch.schedule?.everyMinutes === 60)
+const listed = (await j('GET', '/api/loops')).find(l => l.id === sch.id)
+ok('the list says when it runs next', typeof listed.nextRunAt === 'string')
+// ⚠️ NOT DUE THE INSTANT IT IS SAVED. Asking for "hourly" and getting a run
+// immediately reads as a bug, and is what counting from createdAt would do.
+ok('and it is not due the moment you save it', listed.due === false)
+const off = await j('PATCH', `/api/loops/${sch.id}`, { schedule: null })
+ok('a schedule can be switched off', off.schedule === null)
+const back = (await j('GET', '/api/loops')).find(l => l.id === sch.id)
+ok('and then it is never due', back.due === false && back.nextRunAt === null)
+
 stop()
 console.log(`\n${pass}/${pass + fail} passed  ·  the loop retries what fails and stops when it cannot pass`)
 process.exit(fail ? 1 : 0)

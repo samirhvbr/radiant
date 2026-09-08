@@ -12,6 +12,16 @@ import { untrusted } from './tools.js'
 // the whole desktop (screen_*) and an automated browser (browser_*). Tools that
 // capture a view return an image so a vision model can see the result.
 
+// ⚠️ TELL THE MODEL WHICH DESKTOP IT IS ON, IN THE TOOL ITSELF. "Screenshot the
+// whole Mac desktop" and the example "cmd+c" are what a model reads before it
+// decides what to send, so on Linux they teach it the wrong modifier — and it
+// would go on emitting cmd+ combinations that mean nothing there. The helper
+// translates cmd to ctrl anyway, because a model that never read this still has
+// to be understood, but a description that is true costs nothing and is the
+// difference between working and working by fallback.
+const DESKTOP_NOUN = process.platform === 'darwin' ? 'Mac' : 'computer'
+const COPY_COMBO = process.platform === 'darwin' ? 'cmd+c' : 'ctrl+c'
+
 export const COMPUTER_TOOL_DEFS = [
   // ---- browser ----
   { name: 'browser_navigate', description: 'Open a URL in the controlled browser. Returns a screenshot of the page.', input_schema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
@@ -26,13 +36,13 @@ export const COMPUTER_TOOL_DEFS = [
   { name: 'browser_click_text', description: "Click an element in the user's own Chrome by its visible text or a CSS selector — more reliable than pixel coordinates, and it works on the signed-in browser. Give either text or selector.", input_schema: { type: 'object', properties: { text: { type: 'string' }, selector: { type: 'string' }, tabId: { type: 'number' } }, required: [] } },
   { name: 'browser_network', description: 'List the XHR/fetch JSON API calls the current site has made — its hidden API. Use it AFTER performing an action in the browser (search, load more, submit) to see the underlying requests (method, URL, headers, body, response sample), then recreate them as a plain HTTP client. Sensitive header values (cookies, tokens) are shown as present-but-hidden. Optional filter matches the URL.', input_schema: { type: 'object', properties: { filter: { type: 'string', description: 'Only calls whose URL contains this substring (optional).' } }, required: [] } },
   // ---- desktop ----
-  { name: 'screen_screenshot', description: 'Screenshot the whole Mac desktop. Coordinates for clicks are in this image space.', input_schema: { type: 'object', properties: {}, required: [] } },
+  { name: 'screen_screenshot', description: `Screenshot the whole ${DESKTOP_NOUN} desktop. Coordinates for clicks are in this image space.`, input_schema: { type: 'object', properties: {}, required: [] } },
   { name: 'screen_click', description: 'Click on the desktop at coordinates from the latest screen screenshot.', input_schema: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, button: { type: 'string', enum: ['left', 'right'] } }, required: ['x', 'y'] } },
   { name: 'screen_doubleclick', description: 'Double-click on the desktop.', input_schema: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' } }, required: ['x', 'y'] } },
   { name: 'screen_move', description: 'Move the mouse on the desktop without clicking.', input_schema: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' } }, required: ['x', 'y'] } },
   { name: 'screen_drag', description: 'Press and drag on the desktop from one point to another.', input_schema: { type: 'object', properties: { x1: { type: 'number' }, y1: { type: 'number' }, x2: { type: 'number' }, y2: { type: 'number' } }, required: ['x1', 'y1', 'x2', 'y2'] } },
   { name: 'screen_type', description: 'Type text on the desktop (into the focused app).', input_schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] } },
-  { name: 'screen_key', description: 'Press a key or combo on the desktop, e.g. "return", "cmd+c".', input_schema: { type: 'object', properties: { keys: { type: 'string' } }, required: ['keys'] } },
+  { name: 'screen_key', description: `Press a key or combo on the desktop, e.g. "return", "${COPY_COMBO}".`, input_schema: { type: 'object', properties: { keys: { type: 'string' } }, required: ['keys'] } },
   { name: 'screen_scroll', description: 'Scroll on the desktop at a point. Positive dy scrolls up.', input_schema: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, dy: { type: 'number' } }, required: ['dy'] } }
 ]
 
@@ -198,6 +208,13 @@ export async function computerStatus () {
   return {
     desktop: p.helper && p.screenRecording !== false && p.accessibility !== false,
     browser: await browserAvailable(),
+    // ⚠️ "NOT GRANTED" AND "DOES NOT EXIST HERE" ARE DIFFERENT ANSWERS, AND THE UI
+    // COULD NOT TELL THEM APART. Both arrive as `false`, so off a Mac Settings
+    // reported Screen Recording and Accessibility as permissions the user had
+    // failed to grant, and told them to add Radiant under System Settings →
+    // Privacy & Security — a pane that does not exist on the machine reading the
+    // advice. Rule 12: never render a state the user cannot act on.
+    platform: process.platform,
     ...p
   }
 }

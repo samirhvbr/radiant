@@ -5,7 +5,7 @@ import crypto from 'crypto'
 import os from 'os'
 import path from 'path'
 import fs from 'fs'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, execFile } from 'node:child_process'
 import { promises as dnsp } from 'node:dns'
 import { fileURLToPath } from 'url'
 import { WebSocketServer } from 'ws'
@@ -17,9 +17,14 @@ import { OAUTH_PROVIDERS, buildAuthUrl, completePaste, startLoopback, validAcces
 import { checkForUpdate } from './updater.js'
 import { ollamaBin, hermesBin, SPAWN_ENV } from './ollama.js'
 import { commandRisk } from './util.js'
+import { IS_MAC, openCommand, chromeBinary, tailscaleBinary, defaultShell, cpuName, osVersion as osProductVersion, computerName } from './platform.js'
 import { listFacts, addFacts, addFactManual, deleteFact, clearFacts, relevantFacts } from './memory.js'
 import { shouldReflect, reflectionPrompt, parseProposal, addSuggestion } from './skillsmith.js'
-import { normalizeStep, workPrompt, checkPrompt, readVerdict } from './loop-rules.js'
+import {
+  normalizeStep, workPrompt, checkPrompt, readVerdict, readCommandVerdict,
+  normalizeGoal, hasGoalCheck, goalPrompt, resetSteps,
+  normalizeSchedule, nextRunAt, isDue, afterRun
+} from './loop-rules.js'
 import { normalizeNode, planLayers, suspectEdges, toMermaid, draftPrompt, readDraft, DEFAULT_CONCURRENCY } from './graph-rules.js'
 import { runGraph, isRunning, liveRun, stopGraph } from './graph-run.js'
 
@@ -253,12 +258,7 @@ async function refreshRemoteUrl () {
  * internet. One word apart; only one of them is consented to.
  */
 function enableTailscaleServe (port) {
-  const bins = [
-    '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
-    '/usr/local/bin/tailscale',
-    '/opt/homebrew/bin/tailscale'
-  ]
-  const bin = bins.find(b => { try { fs.accessSync(b); return true } catch { return false } })
+  const bin = tailscaleBinary()
   if (!bin) return
   try {
     execFileSync(bin, ['serve', '--bg', String(port)], { timeout: 15000, stdio: 'ignore' })
@@ -926,10 +926,26 @@ app.get('/api/sync-targets', (req, res) => {
   // answer: setDataDir creates the folder and write-probes it, so a genuine
   // failure arrives as a specific error at the moment it happens, instead of
   // speculative advice on a screen where nothing has been attempted yet.
-  const CLOUD_DOCS = path.join(home, 'Library', 'Mobile Documents', 'com~apple~CloudDocs')
-  push('iCloud Drive', CLOUD_DOCS)
+  //
+  // ⚠️ ALL OF THAT IS ABOUT A MAC, AND ONLY HOLDS ON ONE. "A Mac's iCloud Drive
+  // is ALWAYS at this path" is the whole argument for offering it unverified,
+  // and off a Mac the premise is simply false — there is no iCloud Drive to
+  // create, so setDataDir could not produce the real answer that makes offering
+  // it safe. Offering it anywhere else is the failure this reasoning rejects,
+  // not an instance of it: an option that cannot work, presented as if it could.
+  if (IS_MAC) {
+    const CLOUD_DOCS = path.join(home, 'Library', 'Mobile Documents', 'com~apple~CloudDocs')
+    push('iCloud Drive', CLOUD_DOCS)
+  }
 
   addIfPresent('Dropbox', path.join(home, 'Dropbox'))
+  // Linux keeps synced folders straight in $HOME; there is no CloudStorage
+  // indirection, so these are the same clients under the names they install as.
+  if (!IS_MAC) {
+    addIfPresent('OneDrive', path.join(home, 'OneDrive'))
+    addIfPresent('Nextcloud', path.join(home, 'Nextcloud'))
+    addIfPresent('Google Drive', path.join(home, 'GoogleDrive'))
+  }
   try {
     for (const e of fs.readdirSync(path.join(home, 'Library', 'CloudStorage'))) {
       const dir = path.join(home, 'Library', 'CloudStorage', e)
@@ -1270,7 +1286,7 @@ async function claudeUsage (token) {
 app.post('/api/open', (req, res) => {
   const p = String(req.body?.path || '')
   if (!p || !fs.existsSync(p)) return res.status(400).json({ error: 'no such file' })
-  try { spawn('open', [p], { detached: true, stdio: 'ignore' }).unref(); res.json({ ok: true }) } catch (e) { res.status(500).json({ error: e.message }) }
+  try { spawn(openCommand(), [p], { detached: true, stdio: 'ignore' }).unref(); res.json({ ok: true }) } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
 // ---------- recipes (parameterized task templates) ----------
@@ -1568,7 +1584,12 @@ const OLLAMA = 'http://127.0.0.1:11434'
 // A dedicated --user-data-dir is the only way to get a debuggable Chrome, and it
 // has a happy consequence: a distinct profile means a SEPARATE instance, so his
 // own Chrome never has to close. He signs into this one once and it persists.
-const CHROME_APP = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+// ⚠️ RESOLVED ON EVERY CALL, NOT ONCE AT IMPORT. A constant read at module load
+// answers "not installed" forever to a user who installs Chrome while Radiant is
+// open, and the only way back is to quit the app — which is rule 12: a state the
+// user cannot act on. chromeBinary() also returns null rather than a path that
+// does not exist, so `installed` below is an answer and not a guess.
+const chromeApp = () => chromeBinary()
 const chromeProfile = () => path.join(RADIANT_DIR, 'chrome')
 
 // Dictation. A GET so it can be an EventSource, which reconnects on its own and,
@@ -1604,18 +1625,25 @@ app.get('/api/browser/status', async (req, res) => {
     mode,
     reachable: await chromeReachable(),
     profile: chromeProfile(),
-    installed: fs.existsSync(CHROME_APP)
+    installed: Boolean(chromeApp())
   })
 })
 
 app.post('/api/browser/enable', async (req, res) => {
   const { CDP_PORT, chromeReachable } = await import('./browser.js')
-  if (!fs.existsSync(CHROME_APP)) return res.status(400).json({ error: 'Google Chrome is not installed.' })
+  const bin = chromeApp()
+  if (!bin) {
+    return res.status(400).json({
+      error: IS_MAC
+        ? 'Google Chrome is not installed.'
+        : 'Neither Google Chrome nor Chromium was found. Install one, or use the Radiant extension instead — it drives the browser you already have.'
+    })
+  }
   try {
     fs.mkdirSync(chromeProfile(), { recursive: true })
     // Detached and not through `open`, so the flags are certain to arrive and this
     // window outlives the request.
-    const child = spawn(CHROME_APP, [
+    const child = spawn(bin, [
       `--remote-debugging-port=${CDP_PORT}`,
       `--user-data-dir=${chromeProfile()}`,
       '--no-first-run',
@@ -1634,10 +1662,8 @@ app.post('/api/browser/enable', async (req, res) => {
 })
 
 app.get('/api/system', (req, res) => {
-  let chip = os.cpus()[0]?.model || 'Unknown CPU'
-  try { chip = execSync('sysctl -n machdep.cpu.brand_string', { timeout: 2000 }).toString().trim() } catch {}
-  let osVersion = ''
-  try { osVersion = execSync('sw_vers -productVersion', { timeout: 2000 }).toString().trim() } catch {}
+  const chip = cpuName()
+  const osVersion = osProductVersion()
   // real free space on the volume that actually holds the models (follows the
   // ~/.ollama symlink if models live on an external drive) — the number a
   // download really gets, not Finder's purgeable-inflated figure.
@@ -1654,8 +1680,7 @@ app.get('/api/system', (req, res) => {
   // Mac", and downloads land here too — so a 30 GB pull started on a laptop
   // silently fills a Mac in another room. Tony, on where a model ends up:
   // "correct. thats what confused me."
-  let hostname = os.hostname().replace(/\.local$/, '')
-  try { hostname = execSync('scutil --get ComputerName', { timeout: 2000 }).toString().trim() || hostname } catch {}
+  const hostname = computerName()
   res.json({
     hostname,
     chip,
@@ -2174,7 +2199,79 @@ function lastAssistantText (sessionId) {
   return (m.parts || []).filter(p => p.type === 'text').map(p => p.text).join('\n')
 }
 
-app.get('/api/loops', (req, res) => res.json(listLoops()))
+// How long a check command may block a loop before it counts as a failure.
+// ⚠️ SHORTER THAN THE AGENT'S OWN run_command CAP ON PURPOSE. A check is meant
+// to be a test suite or a file test, not the work — and this one runs while a
+// loop is waiting on it, including on a schedule with nobody watching.
+const CHECK_TIMEOUT_MS = 120_000
+
+/**
+ * Run one check command and report what happened. Never throws and never judges:
+ * the verdict is read by readCommandVerdict, which is pure and tested.
+ *
+ * ⚠️ `bash -lc`, THE SAME SHELL THE AGENT'S OWN run_command USES. A check that
+ * behaves differently from the command the user pasted it out of is a check
+ * nobody can trust — `npm test` has to mean what it means in their terminal,
+ * login profile and PATH included.
+ */
+function runCheckCommand (command, cwd) {
+  return new Promise(resolve => {
+    execFile('bash', ['-lc', command], {
+      cwd: cwd && fs.existsSync(cwd) ? cwd : os.homedir(),
+      timeout: CHECK_TIMEOUT_MS,
+      maxBuffer: 10 * 1024 * 1024,
+      env: process.env
+    }, (err, stdout, stderr) => {
+      // ⚠️ THREE OUTCOMES WEAR THE SAME `err`, AND THEY MEAN DIFFERENT THINGS.
+      // `killed` is the timeout. A string `code` (ENOENT) is the process never
+      // starting. A number is the command running and saying no — which is the
+      // ordinary case, and calling it "could not run" would send the user to
+      // check their command instead of their code.
+      const timedOut = Boolean(err && err.killed)
+      const spawnError = err && !timedOut && typeof err.code !== 'number' ? (err.message || String(err.code)) : null
+      resolve({
+        code: timedOut || spawnError ? null : (err ? err.code : 0),
+        stdout: String(stdout || ''),
+        stderr: String(stderr || ''),
+        timedOut,
+        timeoutMs: CHECK_TIMEOUT_MS,
+        spawnError
+      })
+    })
+  })
+}
+
+/** A session for the goal check — the judge of the whole run, not of one step. */
+function sessionForGoal (loop) {
+  const config = loadConfig()
+  const project = loop.projectId ? getProject(loop.projectId) : null
+  const session = {
+    id: crypto.randomUUID(),
+    title: `Goal check — ${loop.title}`,
+    autoTitle: false,
+    agentId: null,
+    projectId: project ? project.id : null,
+    provider: (project && project.provider) || config.settings.defaultProvider || null,
+    model: (project && project.model) || config.settings.defaultModel,
+    cwd: loop.cwd || (project && project.cwd) || config.settings.defaultCwd || os.homedir(),
+    useTools: true,
+    computerControl: false,
+    loopId: loop.id,
+    loopStepId: null,
+    createdAt: new Date().toISOString(),
+    messages: []
+  }
+  saveSession(session)
+  return session
+}
+
+// ⚠️ `due` IS COMPUTED HERE, NOT STORED. A stored flag needs something to clear
+// it, and the something is a timer nobody wrote — so it goes stale and a loop
+// either never fires or fires every tick. It is a function of the clock and the
+// last run, so it is read as one.
+app.get('/api/loops', (req, res) => res.json(listLoops().map(l => ({
+  ...l, due: isDue(l), nextRunAt: nextRunAt(l)
+}))))
 app.get('/api/loops/:id', (req, res) => {
   const loop = loadLoop(req.params.id)
   if (!loop) return res.status(404).json({ error: 'No such loop.' })
@@ -2187,6 +2284,8 @@ app.post('/api/loops', (req, res) => {
   if (!title) return res.status(400).json({ error: 'A loop needs a goal.' })
   const steps = (Array.isArray(b.steps) ? b.steps : []).map(s => normalizeStep(s)).filter(s => s.title)
   if (!steps.length) return res.status(400).json({ error: 'A loop needs at least one step.' })
+  const now = new Date().toISOString()
+  const schedule = normalizeSchedule(b.schedule)
   res.json(saveLoop({
     id: LOOP_ID(),
     title,
@@ -2196,7 +2295,18 @@ app.post('/api/loops', (req, res) => {
     state: 'idle',
     currentStep: 0,
     steps,
-    createdAt: new Date().toISOString(),
+    ...normalizeGoal(b),
+    // Which pass over the whole loop this is. 1 until a goal check sends it back.
+    pass: 1,
+    lastGoalFail: null,
+    goalState: null,
+    goalSessionId: null,
+    schedule,
+    scheduledAt: schedule ? now : null,
+    scheduleOffReason: null,
+    lastRunAt: null,
+    consecutiveFailures: 0,
+    createdAt: now,
     startedAt: null,
     finishedAt: null
   }))
@@ -2216,6 +2326,25 @@ app.patch('/api/loops/:id', (req, res) => {
   if (b.detail !== undefined) loop.detail = String(b.detail)
   if (b.cwd !== undefined) loop.cwd = b.cwd || null
   if (b.projectId !== undefined) loop.projectId = b.projectId || null
+  if (b.goalCheck !== undefined || b.goalCommand !== undefined || b.maxPasses !== undefined) {
+    Object.assign(loop, normalizeGoal({
+      goalCheck: b.goalCheck !== undefined ? b.goalCheck : loop.goalCheck,
+      goalCommand: b.goalCommand !== undefined ? b.goalCommand : loop.goalCommand,
+      maxPasses: b.maxPasses !== undefined ? b.maxPasses : loop.maxPasses
+    }))
+  }
+  if (b.schedule !== undefined) {
+    const next = normalizeSchedule(b.schedule)
+    // ⚠️ RE-STAMP THE CLOCK WHENEVER THE INTERVAL CHANGES. Without this the next
+    // run is measured from whenever the loop was written, so putting "every
+    // hour" on a week-old loop makes it due the instant you press Save — the
+    // user asked for an hour and got a run immediately, which reads as a bug.
+    const changed = JSON.stringify(next) !== JSON.stringify(loop.schedule || null)
+    loop.schedule = next
+    if (changed) loop.scheduledAt = next ? new Date().toISOString() : null
+    // Switching it back on is the user answering the give-up message.
+    if (next) { loop.scheduleOffReason = null; loop.consecutiveFailures = 0 }
+  }
   if (Array.isArray(b.steps)) {
     const byId = new Map(loop.steps.map(s => [s.id, s]))
     loop.steps = b.steps.map(s => normalizeStep(s, byId.get(s.id))).filter(s => s.title)
@@ -2234,11 +2363,18 @@ app.post('/api/loops/:id/start', (req, res) => {
   if (!loop) return res.status(404).json({ error: 'No such loop.' })
   const from = Number(req.body?.from)
   const start = Number.isFinite(from) ? Math.min(Math.max(0, Math.round(from)), loop.steps.length - 1) : 0
-  loop.steps = loop.steps.map((s, i) => (i < start ? s : { ...s, state: 'pending', attempts: 0, sessionId: null, checkSessionId: null, lastFail: null, startedAt: null, finishedAt: null }))
+  loop.steps = [...loop.steps.slice(0, start), ...resetSteps(loop.steps.slice(start))]
   loop.currentStep = start
   loop.state = 'running'
   loop.startedAt = new Date().toISOString()
+  loop.lastRunAt = loop.startedAt
   loop.finishedAt = null
+  // A fresh run is pass one. Everything the goal check learned last time goes
+  // with it — carrying it forward would make pass one read as a retry.
+  loop.pass = 1
+  loop.lastGoalFail = null
+  loop.goalState = null
+  loop.goalSessionId = null
   res.json(saveLoop(loop))
 })
 
@@ -2424,7 +2560,7 @@ app.post('/api/graphs/draft', async (req, res) => {
  * action: 'work' | 'check' → stream `prompt` into `sessionId`, then call again
  *         'done' | 'failed' | 'idle' → nothing left to run
  */
-app.post('/api/loops/:id/advance', (req, res) => {
+app.post('/api/loops/:id/advance', async (req, res) => {
   let loop = loadLoop(req.params.id)
   if (!loop) return res.status(404).json({ error: 'No such loop.' })
   if (loop.state !== 'running') return res.json({ loop, action: loop.state === 'done' ? 'done' : loop.state === 'failed' ? 'failed' : 'idle' })
@@ -2432,14 +2568,63 @@ app.post('/api/loops/:id/advance', (req, res) => {
   const finish = (state) => {
     loop.state = state
     loop.finishedAt = new Date().toISOString()
+    // A schedule that keeps starting a run that keeps failing is the unbounded
+    // bill this app already refuses one layer down. The rule lives in
+    // loop-rules.js so it can be tested without a timer.
+    Object.assign(loop, afterRun(loop, state))
     loop = saveLoop(loop)
     return res.json({ loop, action: state })
   }
 
-  // Walk forward: a step may resolve without needing a turn (no check to run,
-  // nothing left to do), and the client should not have to round-trip for that.
-  for (let guard = 0; guard < loop.steps.length * 2 + 4; guard++) {
-    if (loop.currentStep >= loop.steps.length) return finish('done')
+  /** Send the run back to step one carrying why. False when the cap is spent. */
+  const startAnotherPass = reason => {
+    loop.lastGoalFail = reason
+    loop.goalState = null
+    loop.goalSessionId = null
+    if (loop.pass >= (loop.maxPasses || 1)) return false
+    loop.pass++
+    loop.currentStep = 0
+    loop.steps = resetSteps(loop.steps)
+    return true
+  }
+
+  // Walk forward: a step may resolve without needing a turn (a command check, no
+  // check at all, nothing left to do), and the client should not have to
+  // round-trip for that.
+  for (let guard = 0; guard < loop.steps.length * 2 + 8; guard++) {
+    if (loop.currentStep >= loop.steps.length) {
+      // ⚠️ EVERY STEP PASSING IS NOT THE GOAL BEING MET. Without a goal check
+      // this is where a loop has always stopped, and it stops on the weakest
+      // possible evidence: that the list ran out. A loop can make each unit
+      // correct and still have run the wrong units, and no amount of tuning a
+      // step can see that, because the fault is not inside any step.
+      if (!hasGoalCheck(loop)) return finish('done')
+
+      if (loop.goalState === 'checking') {
+        const { pass, reason } = readVerdict(lastAssistantText(loop.goalSessionId))
+        if (pass) { loop.lastGoalFail = null; return finish('done') }
+        if (!startAnotherPass(reason)) return finish('failed')
+        loop = saveLoop(loop)
+        continue
+      }
+
+      // Deterministic first, exactly as a step does it: the command cannot be
+      // talked out of its answer and costs nothing to ask.
+      if (loop.goalCommand) {
+        const v = readCommandVerdict(await runCheckCommand(loop.goalCommand, loop.cwd))
+        if (!v.pass) {
+          if (!startAnotherPass(v.reason)) return finish('failed')
+          loop = saveLoop(loop)
+          continue
+        }
+      }
+      if (!loop.goalCheck) { loop.lastGoalFail = null; return finish('done') }
+      loop.goalState = 'checking'
+      const session = sessionForGoal(loop)
+      loop.goalSessionId = session.id
+      loop = saveLoop(loop)
+      return res.json({ loop, action: 'check', sessionId: session.id, stepId: null, goal: true, prompt: goalPrompt(loop) })
+    }
     const step = loop.steps[loop.currentStep]
 
     if (step.state === 'pending') {
@@ -2456,10 +2641,33 @@ app.post('/api/loops/:id/advance', (req, res) => {
     }
 
     if (step.state === 'working') {
+      // ⚠️ THE COMMAND GOES FIRST AND THE OPINION GOES LAST. Evidence is not all
+      // worth the same: a command that exits 0 settles the question for free,
+      // and a model asked afterwards can only agree with it. Running them the
+      // other way round means paying for a judgement that a shell was about to
+      // overrule.
+      if (step.checkCommand) {
+        const v = readCommandVerdict(await runCheckCommand(step.checkCommand, loop.cwd))
+        if (!v.pass) {
+          step.lastFail = v.reason
+          if (step.attempts >= step.maxAttempts) {
+            step.state = 'failed'
+            step.finishedAt = new Date().toISOString()
+            return finish('failed')
+          }
+          // Straight back to the work, with the command's own output as the
+          // evidence. No model turn was spent deciding this.
+          step.state = 'pending'
+          loop = saveLoop(loop)
+          continue
+        }
+      }
       if (!step.check) {
-        // No condition to meet: the step is done when the turn is done. Honest,
-        // and clearly weaker — the view says so.
+        // A command that passed IS the check — deterministic, and stronger than
+        // anything a model was going to say. With neither, the step is done when
+        // the turn is done: honest, clearly weaker, and the view says so.
         step.state = 'passed'
+        step.lastFail = null
         step.finishedAt = new Date().toISOString()
         loop.currentStep++
         continue
@@ -2835,7 +3043,16 @@ app.post('/api/chat', async (req, res) => {
 
   // lead/worker: if this agent has a planner model, have the (stronger) lead model
   // outline the approach first; the (session) model then executes it.
-  let plannedPersona = agent?.persona || ''
+  //
+  // ⚠️ THE PLAN TEXT IS PER-TURN, THE PERSONA ISN'T. `plan` is regenerated fresh
+  // from `text` (this turn's request) every time this branch runs, so it must
+  // travel to providers.js as `planAddendum` (the volatile half of the system
+  // prompt), not folded into `persona` (the stable half) — see providers.js's
+  // systemPrompt() comment. Folding it into persona was the original prompt-
+  // caching bug: it made the "stable" system block change on every turn a
+  // plannerModel was configured.
+  const basePersona = agent?.persona || ''
+  let planAddendum = ''
   if (agent?.plannerModel && agent?.plannerProvider && session.useTools !== false && !session.group) {
     const pProvider = config.providers.find(p => p.id === agent.plannerProvider)
     if (pProvider) {
@@ -2853,7 +3070,7 @@ app.post('/api/chat', async (req, res) => {
           requestApproval: null, signal: controller.signal
         })
       } catch {}
-      if (plan.trim()) plannedPersona = `${plannedPersona}\n\n[A lead model has planned the approach below — follow it, adapting as needed:]\n${plan.trim()}`
+      if (plan.trim()) planAddendum = `[A lead model has planned the approach below — follow it, adapting as needed:]\n${plan.trim()}`
     }
   }
 
@@ -2868,6 +3085,8 @@ app.post('/api/chat', async (req, res) => {
     summarize,
     autoCompact: config.settings.autoCompact !== false,
     autoApproveComputer: config.settings.fullAutomation === true,
+    cachingEnabled: config.settings.promptCaching !== false,
+    cacheTtl: config.settings.cacheTtl === '1h' ? '1h' : '5m',
     mcpTools,
     callMcp,
     emit,
@@ -2895,7 +3114,8 @@ app.post('/api/chat', async (req, res) => {
         ...common,
         useTools: session.useTools !== false,
         computerControl: Boolean(session.computerControl),
-        persona: plannedPersona,
+        persona: basePersona,
+        planAddendum,
         skills: mergedSkills,
         askAgent,
         peerAgents,
@@ -3097,7 +3317,7 @@ wss.on('connection', (ws, req) => {
     if (!SHARE_TOKEN || tok !== SHARE_TOKEN) { ws.close(1008, 'unauthorized'); return }
   }
   const cwd = url.searchParams.get('cwd') || os.homedir()
-  const shell = process.env.SHELL || '/bin/zsh'
+  const shell = defaultShell()
   let term
   try {
     term = pty.spawn(shell, ['-l'], {

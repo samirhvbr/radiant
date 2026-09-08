@@ -3,7 +3,7 @@ import Markdown from './Markdown.jsx'
 import { Icon } from './Icons.jsx'
 import { glyphColor } from '../theme.js'
 import { AgentGlyph } from './AgentIcons.jsx'
-import { api, getServer, apiUrl, authHeaders } from '../api.js'
+import { api, getServer, apiUrl, authHeaders, deviceNoun } from '../api.js'
 import { shouldDrainQueue } from '../queue.js'
 import { emptyDictation, applyDictationEvent, dictationText } from '../dictation.js'
 import { turnStatus, clock } from '../turnstatus.js'
@@ -401,7 +401,7 @@ function WorkingBadge ({ parts, thinkingActive, startedAt, lastEventAt }) {
   )
 }
 
-function AssistantMessage ({ parts, thinking, thinkingActive, thinkingSecs, streaming, model, agent, local, onChoose, startedAt, lastEventAt }) {
+function AssistantMessage ({ parts, thinking, thinkingActive, thinkingSecs, streaming, model, agent, local, onChoose, onContinue, startedAt, lastEventAt }) {
   const waiting = streaming && !parts.length && !thinking
   // A local model that isn't resident cold-loads its weights before the first token.
   // Reveal the note only after a beat, so a warm model (fast first token) never shows it.
@@ -444,6 +444,20 @@ function AssistantMessage ({ parts, thinking, thinkingActive, thinkingSecs, stre
           if (p.type === 'text') out.push(<Markdown key={i} text={p.text} />)
           else if (p.type === 'tool' && (p.widget || p.name === 'show_widget')) out.push(<AgentWidget key={p.id || i} spec={p.widget || p.args} onChoose={onChoose} />)
           else if (p.type === 'notice') out.push(<div key={i} className='notice'>{p.text}</div>)
+          // ⚠️ THE ONE THING IN A TRANSCRIPT THAT MUST NOT BE QUIET. This was a
+          // `notice` — 12px, faint, italic — sitting under thirty-five tool
+          // chips, and it was the entire notification that a turn had given up.
+          // Tony: "how can a user rely on this app if chats just stop with no
+          // warning and no explanation."
+          else if (p.type === 'halt') out.push(
+            <div key={i} className='halt' role='status'>
+              <div className='halt-head'>
+                <Icon.stop /><span>The turn stopped before it was finished</span>
+              </div>
+              <p className='halt-why'>{p.text}</p>
+              {onContinue && <button className='halt-go' onClick={onContinue}>Continue from here</button>}
+            </div>
+          )
         })
         flush()
         return out
@@ -880,7 +894,7 @@ export function GroupPicker ({ agents, onStart, onCancel }) {
   )
 }
 
-export default function Chat ({ session, live, todos = [], stats, approval, question, onAnswer, usage, error, models, agents = [], recipes = [], onSend, onStop, onApproval, onPickModel, onToggleTools, onToggleComputer, onTogglePlan, onSetCwd, onNew, onNewGroup, onTruncate, onRefreshModels, skillSuggestion, onReviewSkill, onDismissSuggestion, onOpenLibrary, rightOpen, onToggleRight, onMenu, approvalMode = 'ask', onCycleApproval, onFork, skills = [], onAddSkill, onRemoveSkill, serverHost, onSetEffort }) {
+export default function Chat ({ session, live, todos = [], stats, approval, question, onAnswer, usage, error, models, agents = [], recipes = [], onSend, onStop, onApproval, onPickModel, onToggleTools, onToggleComputer, onTogglePlan, onSetCwd, onNew, onNewGroup, onTruncate, onRefreshModels, skillSuggestion, onReviewSkill, onDismissSuggestion, onOpenLibrary, rightOpen, onToggleRight, onMenu, approvalMode = 'ask', onCycleApproval, onFork, skills = [], onAddSkill, onRemoveSkill, serverHost, platform, onSetEffort }) {
   // ⚠️ TOOLS RUN ON THE SERVER'S MAC. Computer control is the one where that is
   // dangerous rather than merely surprising: the mouse that moves, the keys that
   // get typed and the screen that is captured all belong to the machine running
@@ -1114,6 +1128,15 @@ export default function Chat ({ session, live, todos = [], stats, approval, ques
   }
 
   // clicking an option in a decision-card widget sends it as the answer
+  // ⚠️ A DEAD END NEEDS AN EXIT, NOT JUST AN EXPLANATION. A turn that used up
+  // its rounds leaves the user holding a half-finished job and no obvious move
+  // — retyping "carry on" works, but only once you know that is what to do. The
+  // button is the difference between a chat that stopped and a chat that broke.
+  const continueTurn = () => {
+    if (!session || streaming) return
+    onSend({ text: 'Continue from where you stopped. Do not start over or re-do work that is already done.', attachments: [] })
+  }
+
   const onWidgetChoice = label => {
     if (!label || !session) return
     if (streaming) { setQueued(q => [...q, { text: label, attachments: [] }]); return }
@@ -1282,10 +1305,11 @@ export default function Chat ({ session, live, todos = [], stats, approval, ques
                     This turn ended without a reply. The model returned nothing — ask again, or try another model.
                   </div>
                 )
-                : <AssistantMessage key={i} parts={m.parts || []} model={m.model} agent={m.agentId ? agents.find(a => a.id === m.agentId) || sessionAgent : sessionAgent} onChoose={onWidgetChoice} />
+                : <AssistantMessage key={i} parts={m.parts || []} model={m.model} agent={m.agentId ? agents.find(a => a.id === m.agentId) || sessionAgent : sessionAgent} onChoose={onWidgetChoice} onContinue={continueTurn} />
           )}
           {live && (
             <AssistantMessage
+              onContinue={continueTurn}
               agent={live.agentId ? agents.find(a => a.id === live.agentId) || sessionAgent : sessionAgent}
               model={session.model}
               local={['ollama', 'lmstudio'].includes(session.provider)}
@@ -1449,7 +1473,7 @@ export default function Chat ({ session, live, todos = [], stats, approval, ques
                   onClick={toggleDictation}
                   title={dictating ? 'Stop dictating' : 'Dictate'}
                   aria-pressed={dictating}
-                  data-tip={dictating ? 'Stop dictating' : 'Dictate — transcribed on this Mac'}
+                  data-tip={dictating ? 'Stop dictating' : `Dictate — transcribed on this ${deviceNoun(platform)}`}
                 ><Icon.mic size={15} />{dictating ? 'Listening' : 'Dictate'}</button>)}
               <button className='attach-btn' onClick={() => fileInputRef.current?.click()} title='Attach files or images' data-tip='Attach files or images'><Icon.plus size={17} /></button>
               <button className={'attach-btn' + (designBusy ? ' is-capturing' : '')} onClick={startDesign} disabled={designBusy} title='Design Mode' data-tip={'Design Mode — open a web page and click\nan element to capture its HTML, CSS &\na screenshot as context'}><Icon.target size={16} /></button>
@@ -1478,7 +1502,7 @@ export default function Chat ({ session, live, todos = [], stats, approval, ques
               <button
                 className={'pill-toggle' + (session.computerControl ? ' on' : '')}
                 onClick={onToggleComputer}
-                data-tip={'Computer control: the model drives the browser\nand desktop of ' + (onAnotherMac ? serverHost : 'this Mac') + '.\nNeeds a vision model + macOS permissions.\nClick to turn ' + (session.computerControl ? 'off' : 'on')}
+                data-tip={'Computer control: the model drives the browser\nand desktop of ' + (onAnotherMac ? serverHost : `this ${deviceNoun(platform)}`) + '.\nNeeds a vision model + the desktop permissions\nin Settings \u2192 Automation.\nClick to turn ' + (session.computerControl ? 'off' : 'on')}
               >
                 <Icon.monitor size={13} /> computer {session.computerControl ? 'on' : 'off'}
                   {onAnotherMac && session.computerControl && <span className='pill-where'> · {serverHost}</span>}

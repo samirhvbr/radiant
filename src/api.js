@@ -528,3 +528,23 @@ export async function saveToFile (name, mime, content) {
   setTimeout(() => URL.revokeObjectURL(url), 10000)
   return ''
 }
+
+/**
+ * What to call the machine running the server, in a sentence.
+ *
+ * ⚠️ THE SERVER'S MACHINE, NOT THE ONE HOLDING THE WINDOW. Everything the UI
+ * says about "this Mac" — where models download to, which agents are connected,
+ * whose screen the agent drives — describes the machine Radiant is running on,
+ * which you may be looking at from another one. That is why the platform rides
+ * along in /api/config beside serverHost rather than being read from the
+ * browser: navigator.platform would describe the wrong computer, confidently.
+ *
+ * Undefined until the config arrives, and 'Mac' is the right thing to say while
+ * waiting — it is what every existing string already said, so nothing flickers
+ * on the platform this was written for.
+ */
+export function deviceNoun (platform) {
+  if (platform === 'win32') return 'PC'
+  if (platform && platform !== 'darwin') return 'computer'
+  return 'Mac'
+}
