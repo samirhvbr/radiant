@@ -2113,7 +2113,7 @@ button.hf-head:hover { background: var(--bg-hover); }
    window is narrow, rather than squeezing five columns into an unreadable
    width. */
 .tb { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
-.tb-head { padding: 14px 18px 8px; }
+.tb-head { padding: 14px 18px 8px; position: sticky; top: 0; z-index: 3; background: var(--bg); }
 .tb-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
 .tb-new, .tb-add {
   padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line, transparent);
@@ -2710,43 +2710,10 @@ button.hf-head:hover { background: var(--bg-hover); }
 .brand,
 .right-tabs,
 .main-drag,
-.app-drag { -webkit-app-region: drag; }
+.gb-head,
+.lp-head,
+.tb-head { -webkit-app-region: drag; }
 
-/* ⚠️ THE STRIP EVERY SCREEN GETS. Rendered once in App.jsx, outside the view
-   switch, because per-view drag handles are how Tasks, Loops and Graphs all
-   shipped with no way to move the window. It sits below .float-toggle's z-index
-   so nothing paints over the window controls. */
-/* ⚠️ `.app > .app-drag`, NOT `.app-drag`. Line 329 sets `.app > *:not(.motion-bg)
-   { position: relative }`, which is more specific than a bare class — so a plain
-   `.app-drag { position: absolute }` lost, the strip became a flex child with no
-   content, and it rendered 0px wide. It was in the DOM, it computed
-   -webkit-app-region: drag, and it was exactly as useless as not being there. */
-/* ⚠️ z-index: 0, AND NEVER pointer-events: none. Both halves of this have now
-   shipped broken, in opposite directions, and the two failures look nothing
-   alike.
-
-   The strip is a real element covering the first 38px of the window. At
-   z-index: 4 it painted OVER the row beneath — New task, New loop and New graph
-   start at y=14 — so the page delivered those clicks to the strip. Tony: "the
-   new loop and new graph buttons are now not clicking intermittently", which is
-   what a button with 24 of its 33 pixels covered feels like.
-
-   The fix for that was pointer-events: none, on the reasoning that Blink reads
-   the drag region from the CSS property at paint time and never consults
-   hit-testing. That reasoning is wrong, and Tony had it back within the hour:
-   "the dragging in the top bar is not working again". An element that cannot be
-   hit is not collected into the draggable region, so the strip became exactly as
-   useless as not being there — the third time this bar has shipped unmovable.
-
-   z-index: 0 settles both. .app > *:not(.motion-bg) is z-index: 1, so the app
-   paints over the strip and every click lands on whatever is actually there.
-   The OS drag region does NOT care about paint order — it is a rectangle, which
-   is the whole reason a covered button had to be exempted in the first place —
-   so the band still drags, minus the no-drag holes punched by the blanket rule
-   below. Nothing is on top of anything, and nothing is invisible to a mouse. */
-.app > .app-drag {
-  position: absolute; top: 0; left: 0; right: 0; height: 38px; z-index: 0;
-}
 
 /* ⚠️ NOTHING INTERACTIVE IS EVER DRAGGABLE. A drag region is a hit-testing
    RECTANGLE, not a subtree: anything whose box lands inside one stops responding
@@ -2782,6 +2749,12 @@ button, a, input, select, textarea, label, summary,
    button keeps working, and covers only the title-bar band. */
 .main-drag {
   position: absolute; top: 0; left: 0; right: 0; height: 38px; z-index: 4;
+  /* ⚠️ IT PAINTS. Every drag surface that has ever failed here was transparent
+     and had nothing behind it — the overlay strip in three variants, and this,
+     on the welcome screen. Every one that has always worked (.topbar, the HUD
+     header) draws a background. Matching the page colour, so it is invisible
+     and present, which is the combination that has held. */
+  background: var(--bg);
 }
 
 /* ── the HUD ───────────────────────────────────────────────────────────────
@@ -2968,7 +2941,7 @@ button, a, input, select, textarea, label, summary,
    step states get colour only where colour means something — passed, failed,
    and the one being worked on. */
 .lp { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); overflow-y: auto; }
-.lp-head { padding: 14px 18px 8px; }
+.lp-head { padding: 14px 18px 8px; position: sticky; top: 0; z-index: 3; background: var(--bg); }
 .lp-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
 .lp-sub { margin: 3px 0 0; font-size: 11.5px; color: var(--text-muted); line-height: 1.5; max-width: 46ch; }
 .lp-new, .lp-save {
@@ -3068,7 +3041,13 @@ button, a, input, select, textarea, label, summary,
    the run is visible, and the shape is what decides whether anything is
    actually running at the same time. */
 .gb { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); overflow-y: auto; }
-.gb-head { padding: 14px 18px 8px; }
+/* ⚠️ A REAL BAR, NOT AN INVISIBLE STRIP OVER THE TOP. The overlay version of
+   this shipped three times and was wrong every time: on top it swallowed the
+   buttons, made click-through it may not drag, behind everything it is occluded.
+   Chat has never had that problem because .topbar is an actual element in the
+   layout that paints — so the boards get the same thing. Sticky, because a
+   header that scrolls away takes the only grab handle with it. */
+.gb-head { padding: 14px 18px 8px; position: sticky; top: 0; z-index: 3; background: var(--bg); }
 .gb-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
 .gb-sub { margin: 3px 0 0; font-size: 11.5px; color: var(--text-muted); line-height: 1.55; max-width: 74ch; }
 
