@@ -248,10 +248,12 @@ export default function TaskBoard ({ agents = [], models = [], liveByTask = {}, 
     <section className='tb' aria-label='Tasks'>
       <header className='tb-head'>
         <h2 className='tb-title'>Tasks</h2>
-        <button className='tb-new' onClick={() => setComposing(c => !c)}>
+      </header>
+      <div className='view-actions'>
+        <button className='rx-btn rx-btn-go' onClick={() => setComposing(c => !c)}>
           {composing ? 'Cancel' : 'New task'}
         </button>
-      </header>
+      </div>
 
       {composing && (
         <form className='tb-compose' onSubmit={create}>

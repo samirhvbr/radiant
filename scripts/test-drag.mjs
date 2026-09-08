@@ -131,6 +131,30 @@ for (const tab of TABS) {
   ok(`the window can be dragged on the ${tab} tab`, await grabbable())
   const bad = await swallowedControls()
   ok(`no control is swallowed on the ${tab} tab${bad.length ? ' — ' + bad.slice(0, 3).join(', ') : ''}`, bad.length === 0)
+
+  // ⚠️ CLICK IT. EVERY VERSION OF THIS GATE HAS REASONED ABOUT RECTANGLES AND
+  // EVERY VERSION HAS MISSED THE REAL BUG. The drag strip added for the last one
+  // is a real element on top of the first 38px of the window, so New task, New
+  // loop and New graph had 24 of their 33 pixels covered: the bottom sliver
+  // worked and the rest hit the strip. -webkit-app-region: no-drag did not save
+  // them, because that governs the OS drag region and not DOM hit-testing — the
+  // element on top still receives the click. The swallow check above passed the
+  // whole time, because it compares drag rectangles and never presses anything.
+  // elementFromPoint at the centre answers the only question that matters: if
+  // you click this control, does the control get it?
+  const reachable = await page.evaluate(() => {
+    const out = []
+    for (const el of document.querySelectorAll('button')) {
+      const r = el.getBoundingClientRect()
+      if (r.width < 8 || r.height < 8 || r.top > 300) continue      // top of the pane only
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+      if (hit && !el.contains(hit) && hit !== el) {
+        out.push(`${(el.textContent || '').trim().slice(0, 22) || el.className} is covered by .${(hit.className || hit.tagName).toString().split(' ')[0]}`)
+      }
+    }
+    return out
+  })
+  ok(`every control near the top of the ${tab} tab actually receives its click${reachable.length ? ' — ' + reachable.slice(0, 3).join(', ') : ''}`, reachable.length === 0)
 }
 
 // ── the exemptions: nothing clickable may sit inside a drag region ───────────

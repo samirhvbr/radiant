@@ -2539,7 +2539,7 @@ app.post('/api/graphs/draft', async (req, res) => {
  * action: 'work' | 'check' → stream `prompt` into `sessionId`, then call again
  *         'done' | 'failed' | 'idle' → nothing left to run
  */
-app.post('/api/loops/:id/advance', (req, res) => {
+app.post('/api/loops/:id/advance', async (req, res) => {
   let loop = loadLoop(req.params.id)
   if (!loop) return res.status(404).json({ error: 'No such loop.' })
   if (loop.state !== 'running') return res.json({ loop, action: loop.state === 'done' ? 'done' : loop.state === 'failed' ? 'failed' : 'idle' })

@@ -270,18 +270,18 @@ export default function GraphBoard ({
   return (
     <section className='gb' aria-label='Graphs'>
       <header className='gb-head'>
-        <div>
-          <h2 className='gb-title'>Graphs</h2>
-          <p className='gb-sub'>
-            Several jobs, and only the waits that are real. A step waits for another only when it reads what
-            that one produced — everything else runs at the same time. A skeptic tries to break the findings
-            before they reach the answer.
-          </p>
-        </div>
+        <h2 className='gb-title'>Graphs</h2>
+        <p className='gb-sub'>
+          Several jobs, and only the waits that are real. A step waits for another only when it reads what
+          that one produced — everything else runs at the same time. A skeptic tries to break the findings
+          before they reach the answer.
+        </p>
+      </header>
+      <div className='view-actions'>
         <button className='rx-btn rx-btn-go' onClick={() => (composing ? setComposing(false) : startDraft())}>
           {composing ? 'Cancel' : 'New graph'}
         </button>
-      </header>
+      </div>
 
       {composing && draft && (
         <div className='gb-compose'>

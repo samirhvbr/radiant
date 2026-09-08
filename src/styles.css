@@ -2091,10 +2091,7 @@ button.hf-head:hover { background: var(--bg-hover); }
    window is narrow, rather than squeezing five columns into an unreadable
    width. */
 .tb { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
-.tb-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 18px 10px; gap: 12px;
-}
+.tb-head { padding: 14px 18px 8px; }
 .tb-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
 .tb-new, .tb-add {
   padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line, transparent);
@@ -2702,7 +2699,21 @@ button.hf-head:hover { background: var(--bg-hover); }
    `.app-drag { position: absolute }` lost, the strip became a flex child with no
    content, and it rendered 0px wide. It was in the DOM, it computed
    -webkit-app-region: drag, and it was exactly as useless as not being there. */
-.app > .app-drag { position: absolute; top: 0; left: 0; right: 0; height: 38px; z-index: 4; }
+.app > .app-drag {
+  position: absolute; top: 0; left: 0; right: 0; height: 38px; z-index: 4;
+  /* ⚠️ pointer-events: none, OR IT EATS EVERY CONTROL UNDER IT. This strip is a
+     real element sitting on top of the first 38px of the window, so New task,
+     New loop and New graph — which start at y=14 — had 24 of their 33 pixels
+     covered. Clicking the bottom sliver worked; clicking anywhere else hit the
+     strip. Tony: "the new loop and new graph buttons are now not clicking
+     intermittently", and intermittent is exactly what a partially covered
+     button feels like.
+     no-drag on the button does NOT help: that governs the OS drag region, not
+     DOM hit-testing, so the element on top still receives the click. The drag
+     region is computed by Blink from the CSS property during paint and is
+     unaffected by pointer-events, so the window still moves. */
+  pointer-events: none;
+}
 
 /* ⚠️ NOTHING INTERACTIVE IS EVER DRAGGABLE. A drag region is a hit-testing
    RECTANGLE, not a subtree: anything whose box lands inside one stops responding
@@ -2924,10 +2935,7 @@ button, a, input, select, textarea, label, summary,
    step states get colour only where colour means something — passed, failed,
    and the one being worked on. */
 .lp { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); overflow-y: auto; }
-.lp-head {
-  display: flex; align-items: flex-start; justify-content: space-between;
-  padding: 14px 18px 10px; gap: 12px;
-}
+.lp-head { padding: 14px 18px 8px; }
 .lp-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
 .lp-sub { margin: 3px 0 0; font-size: 11.5px; color: var(--text-muted); line-height: 1.5; max-width: 46ch; }
 .lp-new, .lp-save {
@@ -3027,7 +3035,7 @@ button, a, input, select, textarea, label, summary,
    the run is visible, and the shape is what decides whether anything is
    actually running at the same time. */
 .gb { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); overflow-y: auto; }
-.gb-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 18px 10px; }
+.gb-head { padding: 14px 18px 8px; }
 .gb-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
 .gb-sub { margin: 3px 0 0; font-size: 11.5px; color: var(--text-muted); line-height: 1.55; max-width: 74ch; }
 
@@ -3230,3 +3238,12 @@ button, a, input, select, textarea, label, summary,
 .gb-assumed { padding: 10px 12px; border-radius: 10px; background: var(--bg-input); display: flex; flex-direction: column; gap: 4px; }
 .gb-assumed ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
 .gb-assumed li { font-size: 11.5px; color: var(--text-muted); line-height: 1.45; }
+
+/* ⚠️ THE PRIMARY ACTION SITS UNDER THE HEADING, NOT OPPOSITE IT. New task, New
+   loop and New graph were floated to the far right of their header — which put
+   them a screen's width from the title they belong to, and inside the top 38px
+   where the window's drag strip lives. Tony: "why are they on the far right.
+   very awkward placement". Left-aligned under the description puts them where
+   the sidebar's New session and New group chat already are, and out of the
+   strip entirely. */
+.view-actions { display: flex; gap: 8px; padding: 0 18px 12px; }
