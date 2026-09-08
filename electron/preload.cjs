@@ -1,6 +1,11 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('radiantNative', {
+  // Which window chrome the page is sitting in. Only macOS honours 'hiddenInset',
+  // so only there does the page own the title bar's space — everywhere else it
+  // must not reserve room for traffic lights or arm drag regions. Absent in a
+  // browser, which is the third case and behaves like neither.
+  platform: process.platform,
   setMode: mode => ipcRenderer.send('radiant:set-mode', mode),
   setBackground: color => ipcRenderer.send('radiant:set-bg', color),
   // Settings runs in its own window with its own copy of the config. Whoever

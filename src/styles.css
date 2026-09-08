@@ -2757,6 +2757,33 @@ button, a, input, select, textarea, label, summary,
   background: var(--bg);
 }
 
+/* ⚠️ ALL OF THE ABOVE EXISTS BECAUSE WE DELETED THE TITLE BAR, AND ONLY macOS
+   LETS US. Electron ignores titleBarStyle 'hiddenInset' elsewhere, so the window
+   keeps its real bar: it already drags, there are no traffic lights to reserve
+   38px for, and every drag region here becomes cost with no benefit — a
+   hit-testing rectangle that swallows clicks, which the exemption list above is
+   the expensive record of. So off a Mac the whole mechanism is switched off
+   rather than exempted control by control.
+
+   Set from main.jsx, and only when radiantNative reports a platform. A browser
+   tab has no title bar of ours either way and is left exactly as it was.
+
+   ⚠️ THIS LIST MUST MATCH THE ONE ABOVE, and it is the one thing here that can
+   rot without failing: a selector added to the drag list and not to this one is
+   a rectangle that goes on swallowing clicks off a Mac, and nothing reports it.
+   The board headings are real bars with buttons in them, so they are exempted
+   rather than hidden; only .main-drag, which exists solely to be dragged, goes. */
+html[data-window-chrome='native'] .topbar,
+html[data-window-chrome='native'] .brand,
+html[data-window-chrome='native'] .right-tabs,
+html[data-window-chrome='native'] .gb-head,
+html[data-window-chrome='native'] .lp-head,
+html[data-window-chrome='native'] .tb-head { -webkit-app-region: no-drag; }
+
+html[data-window-chrome='native'] .main-drag { display: none; }
+
+html[data-window-chrome='native'] .brand { padding-top: 12px; }
+
 /* ── the HUD ───────────────────────────────────────────────────────────────
    A frameless window that floats over other apps. It has no title bar, so the
    header doubles as the drag handle — without -webkit-app-region there is no

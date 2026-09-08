@@ -178,7 +178,13 @@ async function createWindow () {
     // transparent so any color comes through?" hiddenInset keeps the traffic lights
     // where people expect them and lets the page paint behind them; the sidebar
     // reserves room for them (.brand in styles.css) so the wordmark is not covered.
-    titleBarStyle: 'hiddenInset',
+    // ⚠️ AND macOS IS THE ONLY PLACE THAT HONOURS IT. Electron ignores
+    // 'hiddenInset' elsewhere, so the window keeps a real title bar — and the page
+    // then reserves 38px for traffic lights that are not there and arms drag
+    // regions for a bar it does not own, which is not merely useless: a drag
+    // region is a hit-testing rectangle that swallows clicks. styles.css turns
+    // both off; see data-window-chrome in main.jsx.
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     backgroundColor: lastBg || (nativeTheme.themeSource === 'light' ? '#f5f5f6' : '#141517'),
     webPreferences: {
       contextIsolation: true,
@@ -301,7 +307,11 @@ ipcMain.on('rad:hud-toggle', () => { toggleHud() })
 app.whenReady().then(async () => {
   await createWindow()
   // ⌥⌘R — near ⌘R but not it, and unlikely to collide with an editor.
-  try { globalShortcut.register('Alt+Command+R', toggleHud) } catch { /* a taken shortcut is not fatal */ }
+  // ⚠️ `Command` IS THE SUPER KEY OFF A MAC, WHICH BELONGS TO THE DESKTOP. Alt+Super+R
+  // is a combination GNOME and KDE both reserve, so registering it either fails or
+  // takes a shortcut the window manager wanted. CommandOrControl keeps ⌥⌘R on a Mac
+  // and asks for Ctrl+Alt+R elsewhere.
+  try { globalShortcut.register('CommandOrControl+Alt+R', toggleHud) } catch { /* a taken shortcut is not fatal */ }
 })
 
 app.on('will-quit', () => { try { globalShortcut.unregisterAll() } catch {} })
