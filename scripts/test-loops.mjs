@@ -42,6 +42,14 @@ ok('the LAST verdict wins, not the first',
 ok('silence is not a pass', readVerdict('I think that went well.').pass === false)
 ok('and it says why', /did not answer/i.test(readVerdict('I think that went well.').reason))
 ok('an empty message is not a pass', readVerdict('').pass === false)
+// ⚠️ AND IT SAYS SOMETHING DIFFERENT. Seen live with a misconfigured model:
+// every turn returned no text, so every check "did not answer PASS or FAIL" and
+// the loop stopped pointing at a check condition that was never the problem.
+ok('nothing at all is reported as nothing, not as a bad answer',
+   /returned nothing/i.test(readVerdict('').reason) && readVerdict('').empty === true)
+ok('whitespace counts as nothing', readVerdict('   \n  ').empty === true)
+ok('and a real non-verdict answer is still reported as one',
+   /did not answer/i.test(readVerdict('Looks fine to me.').reason) && !readVerdict('Looks fine to me.').empty)
 ok('the word pass in prose is not a verdict', readVerdict('All of the tests pass now.').pass === false)
 ok('a bare FAIL still carries a reason', readVerdict('VERDICT: FAIL').reason.length > 0)
 ok('a bullet in front of it is still a verdict', readVerdict('- VERDICT: PASS').pass === true)

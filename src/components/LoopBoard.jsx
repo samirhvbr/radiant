@@ -226,7 +226,8 @@ export default function LoopBoard ({
           <h2 className='lp-title'>Loops</h2>
           <p className='lp-sub'>
             A run of steps with a check on each. A step that fails its check goes
-            round again with the reason attached.
+            round again with the reason attached. Steps run as ordinary chats, so
+            a loop waits at an approval prompt like anything else does.
           </p>
         </div>
         <button className='lp-new' onClick={() => (composing ? setComposing(false) : startDraft())}>
@@ -336,6 +337,16 @@ export default function LoopBoard ({
                   sit there looking busy. */}
               {isRunning && !mine && (
                 <p className='lp-note'>Marked running, but not by this window. Press Run to pick it up.</p>
+              )}
+              {/* ⚠️ "WORKING" AND "WAITING FOR YOU" LOOK THE SAME FROM HERE. A step
+                  that hit an approval prompt sits in Working, because that is what
+                  the run says — and nothing moves until you answer it in the chat,
+                  which is on another tab. Watched live: an approval landed and the
+                  card just sat there. */}
+              {mine && loop.steps.some(s => s.state === 'working' || s.state === 'checking') && (
+                <p className='lp-note lp-note-quiet'>
+                  Running in Chat. If it stops here, look there — it may be waiting for you to approve something.
+                </p>
               )}
 
               <ol className='lp-steps'>

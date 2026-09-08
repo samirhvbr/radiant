@@ -92,6 +92,15 @@ const VERDICT_RE = /^[ \t]*(?:[-*>][ \t]*)*(?:\*\*)?VERDICT(?:\*\*)?[ \t]*[::][ 
 
 export function readVerdict (text) {
   const s = String(text || '')
+  // ⚠️ NOTHING AT ALL IS A DIFFERENT PROBLEM FROM THE WRONG WORDS, and saying so
+  // is the difference between a user fixing it in a minute and not fixing it.
+  // Watched live with a misconfigured model: every turn returned no text, so
+  // every check "did not answer PASS or FAIL", and after three attempts the loop
+  // stopped with a message that sends you to inspect a check condition that was
+  // never the problem. Both are still a fail — only the sentence differs.
+  if (!s.trim()) {
+    return { pass: false, empty: true, reason: 'The model returned nothing at all, so nothing was checked. Try another model for this step.' }
+  }
   let last = null, m
   VERDICT_RE.lastIndex = 0
   while ((m = VERDICT_RE.exec(s))) last = m

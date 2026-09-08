@@ -2926,6 +2926,7 @@ button.hf-head:hover { background: var(--bg-hover); }
 .lp-card-cwd { color: var(--text-faint); }
 .lp-card-acts { display: flex; gap: 6px; flex: none; }
 .lp-note { margin: 8px 0 0; font-size: 11px; color: var(--accent); line-height: 1.45; }
+.lp-note-quiet { color: var(--text-faint); }
 
 .lp-mini {
   padding: 4px 9px; border-radius: 7px; border: 1px solid var(--line, transparent);
