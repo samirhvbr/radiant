@@ -90,7 +90,17 @@ async function grabbable () {
     const side = document.querySelector('.sidebar')
     const left = side ? side.getBoundingClientRect().right : 0
     return [...document.querySelectorAll('*')].some(el => {
-      if (getComputedStyle(el).getPropertyValue('-webkit-app-region') !== 'drag') return false
+      const cs = getComputedStyle(el)
+      if (cs.getPropertyValue('-webkit-app-region') !== 'drag') return false
+      // ⚠️ AND IT HAS TO BE HITTABLE. 0.7.7 put pointer-events: none on the
+      // strip to stop it eating the buttons underneath, on the theory that the
+      // drag region is read from the CSS property at paint time and never
+      // consults hit-testing. It is not: an element that cannot be hit is not
+      // collected, and the window stopped moving within the hour. This gate
+      // said the tab was draggable the whole time, because it only ever asked
+      // for the property — the same shape of miss as measuring a strip that
+      // rendered zero pixels wide.
+      if (cs.pointerEvents === 'none') return false
       const r = el.getBoundingClientRect()
       if (r.height < 8) return false
       return r.right > left + 40 && r.top < 40      // reaches the main pane's top strip
@@ -222,5 +232,9 @@ ok('the HUD header is still a drag handle', hudRegion === 'drag')
 
 await browser.close()
 console.log(results.join('\n'))
-console.log(`\n${pass}/${pass + fail} passed  ·  the window can still be moved`)
+// ⚠️ THE LAST LINE MUST NOT SAY THE OPPOSITE OF THE RESULT. It read "the window
+// can still be moved" unconditionally — printed directly under three FAIL lines
+// saying it could not — and a summary that contradicts its own output is how a
+// red run gets read as green.
+console.log(`\n${pass}/${pass + fail} passed  ·  ${fail ? 'THE WINDOW CANNOT BE MOVED' : 'the window can still be moved'}`)
 await die(fail ? 1 : 0)
