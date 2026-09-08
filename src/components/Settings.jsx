@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { verdict, FIT_LABEL, FITS_WELL, FITS_TIGHT, FITS_NO, COMFORTABLE } from '../fit.js'
-import { api, startDownload, getDownloads, cancelDownload, streamQuantize, getServer, setServer, testServer, saveToFile } from '../api.js'
+import { api, startDownload, getDownloads, cancelDownload, streamQuantize, getServer, setServer, testServer, saveToFile, deviceNoun } from '../api.js'
 import { THEMES, MODES, FONTS, UI_SCALES, applyTheme, hexToOklch, accentHex, glyphColor } from '../theme.js'
 import { paletteWarnings, deriveAccent } from '../palette.js'
 import { MOTIONS } from './MotionBackground.jsx'
@@ -410,8 +410,8 @@ function DefaultModelBlock ({ config, onSettings }) {
       <div className='set-block-title'>Default model for new chats</div>
       <p className='hint' style={{ marginTop: 2 }}>
         What a new chat starts on when nothing else decides — an agent's own model, or a
-        project's, still wins. Set per Mac, so a Mac can default to the models it has
-        downloaded rather than ones it cannot run.
+        project's, still wins. Set per {deviceNoun(config?.platform)}, so each one can default to
+        the models it has downloaded rather than ones it cannot run.
       </p>
       <div className='model-pick-field' style={{ marginTop: 8 }}>
           <ModelPicker
@@ -425,7 +425,7 @@ function DefaultModelBlock ({ config, onSettings }) {
         </div>
       {current && !models.some(m => m.id === current) && (
         <div className='set-hint' style={{ marginTop: 6 }}>
-          <strong>{current}</strong> is set here but is not available on this Mac right now —
+          <strong>{current}</strong> is set here but is not available on this {deviceNoun(config?.platform)} right now —
           new chats will fall back until it is, or until you pick another.
         </div>
       )}
@@ -442,11 +442,14 @@ function ModelsPane ({ onModelsChanged, config, onSettings }) {
   // connected to another one is simply wrong, and it is how a pull started on a
   // laptop ends up filling a Mac in another room. Tony, on where a model lands:
   // "correct. thats what confused me."
+  // /api/system already describes the server's machine — hostname, chip, free
+  // space — so the word for it comes from the same answer as the rest.
+  const noun = deviceNoun(system?.platform)
   const onAnotherMac = Boolean(getServer().base)
   const serverMac = system?.hostname || (() => {
-    try { return new URL(getServer().base).hostname } catch { return 'the other Mac' }
+    try { return new URL(getServer().base).hostname } catch { return `the other ${noun}` }
   })()
-  const where = onAnotherMac ? serverMac : 'this Mac'
+  const where = onAnotherMac ? serverMac : `this ${noun}`
   const [local, setLocal] = useState({ running: true, models: [] })
   const [q, setQ] = useState('')
   const [sort, setSort] = useState('downloads')
@@ -522,7 +525,7 @@ function ModelsPane ({ onModelsChanged, config, onSettings }) {
       <h3>Local models</h3>
       {onAnotherMac && (
         <div className='set-hint' style={{ marginBottom: 10 }}>
-          You are using the Radiant on <strong>{serverMac}</strong>. Models download to that Mac
+          You are using the Radiant on <strong>{serverMac}</strong>. Models download to that {noun}
           and run there — not on this one — and the memory and free space below are its own.
           A download keeps going there even if you close this window.
         </div>
@@ -968,7 +971,7 @@ function AgentsPane ({ config, onConfigChange, initialView }) {
       </div>
       {external.length > 0 && (
         <div className='ext-agents'>
-          <div className='ext-agents-title'>Connected agents on this Mac</div>
+          <div className='ext-agents-title'>Connected agents on this {deviceNoun(config?.platform)}</div>
           <p className='ext-agents-sub'>Radiant found other agent apps you have installed. Connect a Hermes agent to chat with the real one — its own model, skills, and memory — right inside Radiant.</p>
           {external.map(ext => {
             const already = agents.some(a => (a.name || '').trim().toLowerCase() === (ext.name || '').trim().toLowerCase())
@@ -1651,7 +1654,7 @@ function AgentPane ({ config, onSettings }) {
       <ChromeAttachBlock />
 
       <div className='set-block'>
-        <div className='set-block-title'>What works on {config?.serverHost || 'this Mac'}</div>
+        <div className='set-block-title'>What works on {config?.serverHost || `this ${deviceNoun(config?.platform)}`}</div>
         <div className='comp-stat'>
           <span className={comp?.browser ? 'key-ok' : 'fit-badge fit-no'}>{comp?.browser ? '✓' : '—'} Browser control</span>
           <span className='desc'>drives your system Chrome. Nothing to set up.</span>

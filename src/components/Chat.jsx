@@ -3,7 +3,7 @@ import Markdown from './Markdown.jsx'
 import { Icon } from './Icons.jsx'
 import { glyphColor } from '../theme.js'
 import { AgentGlyph } from './AgentIcons.jsx'
-import { api, getServer, apiUrl, authHeaders } from '../api.js'
+import { api, getServer, apiUrl, authHeaders, deviceNoun } from '../api.js'
 import { shouldDrainQueue } from '../queue.js'
 import { emptyDictation, applyDictationEvent, dictationText } from '../dictation.js'
 import { turnStatus, clock } from '../turnstatus.js'
@@ -894,7 +894,7 @@ export function GroupPicker ({ agents, onStart, onCancel }) {
   )
 }
 
-export default function Chat ({ session, live, todos = [], stats, approval, question, onAnswer, usage, error, models, agents = [], recipes = [], onSend, onStop, onApproval, onPickModel, onToggleTools, onToggleComputer, onTogglePlan, onSetCwd, onNew, onNewGroup, onTruncate, onRefreshModels, skillSuggestion, onReviewSkill, onDismissSuggestion, onOpenLibrary, rightOpen, onToggleRight, onMenu, approvalMode = 'ask', onCycleApproval, onFork, skills = [], onAddSkill, onRemoveSkill, serverHost, onSetEffort }) {
+export default function Chat ({ session, live, todos = [], stats, approval, question, onAnswer, usage, error, models, agents = [], recipes = [], onSend, onStop, onApproval, onPickModel, onToggleTools, onToggleComputer, onTogglePlan, onSetCwd, onNew, onNewGroup, onTruncate, onRefreshModels, skillSuggestion, onReviewSkill, onDismissSuggestion, onOpenLibrary, rightOpen, onToggleRight, onMenu, approvalMode = 'ask', onCycleApproval, onFork, skills = [], onAddSkill, onRemoveSkill, serverHost, platform, onSetEffort }) {
   // ⚠️ TOOLS RUN ON THE SERVER'S MAC. Computer control is the one where that is
   // dangerous rather than merely surprising: the mouse that moves, the keys that
   // get typed and the screen that is captured all belong to the machine running
@@ -1473,7 +1473,7 @@ export default function Chat ({ session, live, todos = [], stats, approval, ques
                   onClick={toggleDictation}
                   title={dictating ? 'Stop dictating' : 'Dictate'}
                   aria-pressed={dictating}
-                  data-tip={dictating ? 'Stop dictating' : 'Dictate — transcribed on this Mac'}
+                  data-tip={dictating ? 'Stop dictating' : `Dictate — transcribed on this ${deviceNoun(platform)}`}
                 ><Icon.mic size={15} />{dictating ? 'Listening' : 'Dictate'}</button>)}
               <button className='attach-btn' onClick={() => fileInputRef.current?.click()} title='Attach files or images' data-tip='Attach files or images'><Icon.plus size={17} /></button>
               <button className={'attach-btn' + (designBusy ? ' is-capturing' : '')} onClick={startDesign} disabled={designBusy} title='Design Mode' data-tip={'Design Mode — open a web page and click\nan element to capture its HTML, CSS &\na screenshot as context'}><Icon.target size={16} /></button>
@@ -1502,7 +1502,7 @@ export default function Chat ({ session, live, todos = [], stats, approval, ques
               <button
                 className={'pill-toggle' + (session.computerControl ? ' on' : '')}
                 onClick={onToggleComputer}
-                data-tip={'Computer control: the model drives the browser\nand desktop of ' + (onAnotherMac ? serverHost : 'this Mac') + '.\nNeeds a vision model + macOS permissions.\nClick to turn ' + (session.computerControl ? 'off' : 'on')}
+                data-tip={'Computer control: the model drives the browser\nand desktop of ' + (onAnotherMac ? serverHost : `this ${deviceNoun(platform)}`) + '.\nNeeds a vision model + the desktop permissions\nin Settings \u2192 Automation.\nClick to turn ' + (session.computerControl ? 'off' : 'on')}
               >
                 <Icon.monitor size={13} /> computer {session.computerControl ? 'on' : 'off'}
                   {onAnotherMac && session.computerControl && <span className='pill-where'> · {serverHost}</span>}
