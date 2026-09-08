@@ -23,17 +23,26 @@
  */
 import { chromium } from 'playwright-core'
 import { spawn } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const PORT = 5877
 let pass = 0, fail = 0
 const results = []
 const ok = (name, cond) => { cond ? pass++ : (fail++, results.push(`  FAIL ${name}`)) }
 
+// ⚠️ ITS OWN DATA DIRECTORY, NOT YOURS. This ran against the real ~/.radiant —
+// which on this Mac points into iCloud Drive — so the moment the gate needed a
+// chat to look at, it created one in Tony's actual sidebar. Every other gate in
+// this repo already owns its directory; this one was written before that rule
+// and never revisited because it had not needed to write anything.
+const dataDir = mkdtempSync(join(tmpdir(), 'radiant-drag-'))
 const server = spawn('node', ['server/index.js'], {
-  env: { ...process.env, RADIANT_PORT: String(PORT), NODE_ENV: 'production' },
+  env: { ...process.env, RADIANT_PORT: String(PORT), RADIANT_DIR: dataDir, NODE_ENV: 'production' },
   stdio: 'ignore'
 })
-const die = async code => { server.kill(); process.exit(code) }
+const die = async code => { server.kill(); try { rmSync(dataDir, { recursive: true, force: true }) } catch {} ; process.exit(code) }
 process.on('exit', () => server.kill())
 
 const base = `http://127.0.0.1:${PORT}`
@@ -130,6 +139,49 @@ for (const tab of TABS) {
 // position:absolute at the top-right of the sidebar, landing inside .brand's
 // rect without being inside .brand. Anything INTERSECTING a drag rect is
 // swallowed, child or not, so intersection is what gets tested.
+
+// ── the composer's controls stay on one line ────────────────────────────────
+// ⚠️ WRAPPING BEATS SHRINKING IN FLEXBOX, which is the whole bug. The model
+// picker had flex-shrink: 1 and a model-name that ellipsizes, and neither ever
+// fired: a wrapping flex container moves an item to the next line before it
+// will shrink one. So a long model id — "OPENROUTER moonshotai/kimi-k3" — pushed
+// the permissions chip onto a row of its own at EVERY window width from 1000 to
+// 1700, and which row it landed on changed with the label. Tony: "ask each is
+// hanging on another line. when i make it allow all it jumps over the far
+// right." A control that moves when you use it is one you have to hunt for.
+{
+  // The composer only exists with a chat open, and this server starts empty.
+  await fetch(`${base}/api/sessions`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ provider: 'openrouter', model: 'moonshotai/kimi-k3' })
+  }).catch(() => {})
+  await page.locator('.sidebar-switch button:text-is("Chat")').first().click().catch(() => {})
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.locator('.session-item').first().click().catch(() => {})
+  await page.waitForSelector('.composer-tools', { timeout: 8000 }).catch(() => {})
+  const row = await page.evaluate(() => {
+    const tools = document.querySelector('.composer-tools')
+    if (!tools) return { skip: true }
+    // Force the widest label the picker can show, which is what triggered it.
+    const mb = tools.querySelector('.model-btn')
+    if (mb) mb.innerHTML = '<span class="provider-tag">OPENROUTER</span><span class="model-name">moonshotai/kimi-k3</span><span>▲</span>'
+    const kids = [...tools.children].filter(c => c.getBoundingClientRect().height > 0)
+    // Group by vertical CENTRE — chips differ by a pixel or two in height, and
+    // comparing tops reported a wrap that was not there.
+    const mid = c => { const r = c.getBoundingClientRect(); return r.top + r.height / 2 }
+    const centres = kids.map(mid)
+    const rows = centres.filter((y, i) => centres.findIndex(z => Math.abs(z - y) < 6) === i)
+    const name = tools.querySelector('.model-name')
+    return { rows: rows.length, ellipsized: name ? name.scrollWidth > name.clientWidth + 1 : false }
+  })
+  if (row.skip) ok('the composer is there to check', false)
+  else {
+    ok(`the composer controls stay on one line with a long model name (got ${row.rows} rows)`, row.rows === 1)
+    // The picker is the only item whose width is not known in advance, so it is
+    // the one that must give.
+    ok('and it is the model name that gives, by ellipsizing', row.ellipsized)
+  }
+}
 
 // ── and the HUD, which has no title bar of any kind ──────────────────────────
 // ⚠️ A FRESH PAGE, not page.goto with a different hash — same-document hash

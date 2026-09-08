@@ -1151,6 +1151,16 @@ code, pre, .mono { font-family: var(--font-mono); }
 .composer-row { display: flex; align-items: flex-end; gap: 8px; }
 /* left controls wrap among themselves; the send button stays pinned right */
 .composer-tools { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+/* ⚠️ WRAPPING BEATS SHRINKING, WHICH IS WHY flex-shrink ON THE MODEL BUTTON DID
+   NOTHING. In a wrapping flex container the browser moves an item to the next
+   line before it will shrink one, so a long model id — "OPENROUTER
+   moonshotai/kimi-k3" — pushed the permissions chip onto a second row, and which
+   row it landed on changed with the label: "ask each" wrapped, "allow all" fit.
+   A control that moves when you use it is a control you have to hunt for.
+   flex-basis 0 makes the picker take only the space the fixed chips leave, so it
+   ellipsizes instead of shoving them around. It is the only item here whose
+   width is not known in advance. */
+.composer-tools .model-btn { flex: 1 1 0; min-width: 96px; }
 .composer-actions { flex: none; display: flex; align-items: center; gap: 8px; }
 .composer-row .grow { flex: 1 1 0; min-width: 0; }
 .pill-toggle {
