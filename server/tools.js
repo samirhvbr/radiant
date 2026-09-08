@@ -5,7 +5,6 @@ import { execFile, spawn } from 'child_process'
 import { SPAWN_ENV } from './ollama.js'
 import { searchSessions } from './config.js'
 
-const MAX_OUTPUT = 40_000
 
 // background jobs (run_command with run_in_background:true). id -> job
 const jobs = new Map()
@@ -28,15 +27,6 @@ function newJob (command, cwd) {
 
 // Tool definitions in a neutral shape; providers.js converts per API.
 export const TOOL_DEFS = [
-  {
-    name: 'list_dir',
-    description: 'List the files in a directory. Returns names; directories end with "/".',
-    input_schema: {
-      type: 'object',
-      properties: { path: { type: 'string', description: 'Absolute or workspace-relative directory path. Defaults to the workspace root.' } },
-      required: []
-    }
-  },
   {
     name: 'read_file',
     description: 'Read a text file. Returns the content with 1-indexed line numbers.',
@@ -89,19 +79,22 @@ export const TOOL_DEFS = [
     }
   },
   {
-    name: 'job_output',
-    description: 'Get the current output and status of a background job started with run_command(run_in_background:true).',
-    input_schema: { type: 'object', properties: { id: { type: 'string', description: 'The job id' } }, required: ['id'] }
-  },
-  {
-    name: 'job_list',
-    description: 'List background jobs and whether each is still running.',
-    input_schema: { type: 'object', properties: {}, required: [] }
-  },
-  {
-    name: 'job_kill',
-    description: 'Stop a background job.',
-    input_schema: { type: 'object', properties: { id: { type: 'string', description: 'The job id' } }, required: ['id'] }
+    // ⚠️ ONE SCHEMA, THREE VERBS. These were job_output, job_list and job_kill:
+    // three definitions on every request for one object with a stream and a
+    // signal. Every permanent tool taxes every turn — the grammar shapes token
+    // generation whether or not the tool is used — so three near-identical
+    // schemas is three times the tax for one idea. The old names still WORK
+    // (see aliasCall); they are simply no longer advertised.
+    name: 'job',
+    description: 'Inspect or stop a background job started with run_command(run_in_background:true). action "output" reads it, "list" shows all of them, "kill" stops one.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['output', 'list', 'kill'], description: 'What to do' },
+        id: { type: 'string', description: 'The job id — required for output and kill' }
+      },
+      required: ['action']
+    }
   },
   {
     name: 'fetch_url',
@@ -178,10 +171,17 @@ export function outsideWorkspace (p, cwd) {
   return rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)
 }
 
-function truncate (text) {
-  if (text.length <= MAX_OUTPUT) return text
-  return text.slice(0, MAX_OUTPUT) + `\n… [truncated, ${text.length - MAX_OUTPUT} more characters]`
-}
+// ⚠️ TRUNCATION MOVED OUT OF HERE ON PURPOSE. It lived in four of the twelve
+// tools and nowhere else, which is what an opt-in helper always produces: the
+// author who did not know it existed rolled their own, and the author who never
+// imagined a big result rolled nothing. `fetch_url` returned a whole web page.
+// It is enforced for every tool — MCP and desktop control included — in
+// server/tool-bounds.js, at the one place the turn loop calls a tool.
+//
+// Truncating inside an implementation is also what breaks composition: the model
+// cannot rely on a tool's output if every use has to parse harness notices out
+// of the data first, and a result piped through another tool stacks a second
+// layer of notices on the same text.
 
 
 // ---- the web ----------------------------------------------------------------
@@ -267,25 +267,51 @@ async function webSearch (query, count) {
  *   reach it: execFile had a 120s timeout and no signal, so the turn sat there
  *   finishing a command the user had already cancelled.
  */
-export async function runTool (name, input, cwd, signal) {
+function listDir (p, cwd) {
+  const dir = resolvePath(p, cwd)
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .map(e => e.name + (e.isDirectory() ? '/' : ''))
+    .sort()
+    .join('\n') || '(empty directory)'
+}
+
+/**
+ * ⚠️ THE ROSTER SHRANK; THE DIALECT DID NOT. Models are RL-trained on other
+ * harnesses' tool names and will call list_dir or job_kill whether or not we
+ * advertise them. Be strict about the semantic contract and charitable about
+ * how the model spells it: an unadvertised name that maps unambiguously onto a
+ * tool we have is repaired, not refused. Refusing would trade tokens saved on
+ * the schema for tokens burnt on a retry.
+ */
+const ALIASES = {
+  job_output: i => ['job', { ...i, action: 'output' }],
+  job_list: i => ['job', { ...i, action: 'list' }],
+  job_kill: i => ['job', { ...i, action: 'kill' }],
+  ls: i => ['list_dir', i]
+}
+export function aliasCall (name, input) {
+  const fn = ALIASES[name]
+  return fn ? fn(input || {}) : [name, input]
+}
+
+export async function runTool (rawName, rawInput, cwd, signal) {
+  const [name, input] = aliasCall(rawName, rawInput)
   try {
     switch (name) {
-      case 'list_dir': {
-        const dir = resolvePath(input.path, cwd)
-        const entries = fs.readdirSync(dir, { withFileTypes: true })
-          .map(e => e.name + (e.isDirectory() ? '/' : ''))
-          .sort()
-        return truncate(entries.join('\n') || '(empty directory)')
-      }
+      case 'list_dir': return listDir(input.path, cwd)
       case 'read_file': {
         const file = resolvePath(input.path, cwd)
+        // ⚠️ A DIRECTORY IS A RESOURCE TOO. list_dir was its own schema on every
+        // request for something Read can answer — and a model that asks to read
+        // a folder means "show me what is in it", not "fail".
+        if (fs.existsSync(file) && fs.statSync(file).isDirectory()) return listDir(input.path, cwd)
         const lines = fs.readFileSync(file, 'utf8').split('\n')
         const start = Math.max(1, input.offset || 1)
         const limit = Math.min(input.limit || 2000, 5000)
         const slice = lines.slice(start - 1, start - 1 + limit)
         const numbered = slice.map((l, i) => `${start + i}\t${l}`).join('\n')
         const note = start - 1 + limit < lines.length ? `\n… [${lines.length} lines total]` : ''
-        return truncate(numbered + note)
+        return numbered + note
       }
       case 'write_file': {
         const file = resolvePath(input.path, cwd)
@@ -308,7 +334,7 @@ export async function runTool (name, input, cwd, signal) {
       case 'run_command': {
         if (input.run_in_background) {
           const id = newJob(input.command, cwd)
-          return `Started in the background as ${id}. Use job_output("${id}") to check on it, job_kill("${id}") to stop it.`
+          return `Started in the background as ${id}. Use job(action:"output", id:"${id}") to check on it, or action:"kill" to stop it.`
         }
         return await new Promise(resolve => {
           // ⚠️ `signal` KILLS THE CHILD. Without it Stop was a suggestion: the
@@ -321,25 +347,24 @@ export async function runTool (name, input, cwd, signal) {
             if (err?.name === 'AbortError' || signal?.aborted) out += '\n[stopped by you]'
             else if (err && err.killed) out += '\n[command timed out after 120s]'
             else if (err && err.code) out += `\n[exit code ${err.code}]`
-            resolve(truncate(out || '(no output)'))
+            resolve(out || '(no output)')
           })
         })
       }
-      case 'job_output': {
+      case 'job': {
+        if (input.action === 'list') {
+          if (!jobs.size) return 'No background jobs.'
+          return [...jobs.values()].map(j => `${j.id}  ${j.done ? `done(${j.exitCode})` : 'running'}  ${j.command.slice(0, 60)}`).join('\n')
+        }
+        if (!input.id) return 'That needs a job id. Use job(action:"list") to see them.'
         const job = jobs.get(input.id)
-        if (!job) return `No job ${input.id}. Use job_list to see running jobs.`
+        if (!job) return `No job ${input.id}. Use job(action:"list") to see running jobs.`
+        if (input.action === 'kill') {
+          if (job.proc) { try { job.proc.kill('SIGKILL') } catch {} }
+          return `Killed ${input.id}.`
+        }
         const status = job.done ? `finished (exit ${job.exitCode})` : 'still running'
-        return truncate(`[job ${job.id} — ${status}]\n${job.output || '(no output yet)'}`)
-      }
-      case 'job_list': {
-        if (!jobs.size) return 'No background jobs.'
-        return [...jobs.values()].map(j => `${j.id}  ${j.done ? `done(${j.exitCode})` : 'running'}  ${j.command.slice(0, 60)}`).join('\n')
-      }
-      case 'job_kill': {
-        const job = jobs.get(input.id)
-        if (!job) return `No job ${input.id}.`
-        if (job.proc) { try { job.proc.kill('SIGKILL') } catch {} }
-        return `Killed ${input.id}.`
+        return `[job ${job.id} — ${status}]\n${job.output || '(no output yet)'}`
       }
       case 'fetch_url': {
         const text = await fetchAsText(input.url, input.max_chars)

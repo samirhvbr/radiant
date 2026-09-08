@@ -192,7 +192,8 @@ const TOOL_ICONS = {
   read_file: '≡',
   write_file: '✎',
   edit_file: '✎',
-  list_dir: '▤'
+  list_dir: '▤',
+  job: '▤'
 }
 
 function argSummary (name, args) {
@@ -200,6 +201,7 @@ function argSummary (name, args) {
   if (name === 'run_command') return args.command || ''
   if (name === 'edit_file' || name === 'read_file' || name === 'write_file') return args.path || ''
   if (name === 'list_dir') return args.path || '.'
+  if (name === 'job') return [args.action, args.id].filter(Boolean).join(' ')
   return JSON.stringify(args)
 }
 
